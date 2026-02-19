@@ -1,0 +1,30 @@
+.command-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+.command-bar input {
+  border: none;
+  outline: none;
+  background: transparent;
+  min-width: 220px;
+  font-family: "IBM Plex Mono", "Space Grotesk", monospace;
+  font-size: 12px;
+}
+
+.command-bar button {
+  border: none;
+  background: #0b0d11;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+}

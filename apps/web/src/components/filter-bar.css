@@ -1,0 +1,40 @@
+.filter-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  flex: 1;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #4a5568;
+}
+
+.filter-field span {
+  font-weight: 600;
+}
+
+.filter-field select,
+.filter-field input {
+  font-family: "IBM Plex Mono", "Space Grotesk", monospace;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  padding: 8px 10px;
+  background: #fff;
+  color: #0b0d11;
+}
+
+.filter-field input::placeholder {
+  color: rgba(15, 23, 42, 0.4);
+}
+
+@media (max-width: 720px) {
+  .filter-bar {
+    width: 100%;
+  }
+}

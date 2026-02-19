@@ -1,0 +1,16 @@
+{
+  "name": "@rehilo/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "build": "echo \"API build not required\"",
+    "typecheck": "echo \"API typecheck not configured\""
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^4.22.1"
+  }
+}

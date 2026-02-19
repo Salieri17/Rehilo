@@ -1,0 +1,19 @@
+{
+  "name": "rehilo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Command-driven relational knowledge system",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @rehilo/domain && npm run build --workspace @rehilo/web && npm run build --workspace @rehilo/api",
+    "dev:web": "npm run dev --workspace @rehilo/web",
+    "dev:api": "npm run dev --workspace @rehilo/api",
+    "typecheck": "npm run typecheck --workspace @rehilo/domain && npm run typecheck --workspace @rehilo/web && npm run typecheck --workspace @rehilo/api"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

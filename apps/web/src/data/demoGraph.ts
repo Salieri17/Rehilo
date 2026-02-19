@@ -1,0 +1,126 @@
+import type { NodeEntity } from "@rehilo/domain";
+
+export const demoNodes: NodeEntity[] = [
+  {
+    id: "n1",
+    workspaceId: "ws-personal",
+    type: "project",
+    title: "Home studio refresh",
+    content: "Upgrade acoustics and lighting.",
+    tags: ["home", "audio"],
+    relations: [{ targetNodeId: "n2", kind: "task" }, { targetNodeId: "n3", kind: "research" }],
+    metadata: {},
+    createdAt: "2026-02-02T09:10:00.000Z",
+    updatedAt: "2026-02-10T09:10:00.000Z"
+  },
+  {
+    id: "n2",
+    workspaceId: "ws-personal",
+    type: "todo",
+    title: "Order panels",
+    content: "- [ ] Compare suppliers\n- [ ] Check lead times",
+    tags: ["home", "todo"],
+    relations: [{ targetNodeId: "n1", kind: "parent" }],
+    metadata: {},
+    createdAt: "2026-02-03T11:30:00.000Z",
+    updatedAt: "2026-02-05T11:30:00.000Z",
+    status: "pending"
+  },
+  {
+    id: "n3",
+    workspaceId: "ws-personal",
+    type: "note",
+    title: "Acoustic reference",
+    content: "Gather measurements from last session.",
+    tags: ["audio", "research"],
+    relations: [{ targetNodeId: "n1", kind: "reference" }],
+    metadata: {},
+    createdAt: "2026-02-04T15:10:00.000Z",
+    updatedAt: "2026-02-06T15:10:00.000Z"
+  },
+  {
+    id: "n4",
+    workspaceId: "ws-personal",
+    type: "idea",
+    title: "Modular wall",
+    content: "Use hex panels with hidden lighting.",
+    tags: ["home", "idea"],
+    relations: [{ targetNodeId: "n1", kind: "inspire" }],
+    metadata: {},
+    createdAt: "2026-02-08T12:00:00.000Z",
+    updatedAt: "2026-02-08T12:00:00.000Z"
+  },
+  {
+    id: "n5",
+    workspaceId: "ws-personal",
+    type: "link",
+    title: "https://acoustics.example.com",
+    content: "Supplier reference.",
+    tags: ["audio"],
+    relations: [{ targetNodeId: "n2", kind: "vendor" }],
+    metadata: { url: "https://acoustics.example.com" },
+    createdAt: "2026-02-05T09:00:00.000Z",
+    updatedAt: "2026-02-05T09:00:00.000Z"
+  },
+  {
+    id: "n6",
+    workspaceId: "ws-work",
+    type: "project",
+    title: "Reporting system",
+    content: "Quarterly metrics for leadership.",
+    tags: ["analytics", "q1"],
+    relations: [{ targetNodeId: "n7", kind: "task" }, { targetNodeId: "n8", kind: "task" }],
+    metadata: {},
+    createdAt: "2026-01-22T10:00:00.000Z",
+    updatedAt: "2026-02-12T10:00:00.000Z"
+  },
+  {
+    id: "n7",
+    workspaceId: "ws-work",
+    type: "todo",
+    title: "Model KPIs",
+    content: "Define metrics for pipeline health.",
+    tags: ["analytics", "todo"],
+    relations: [{ targetNodeId: "n6", kind: "parent" }],
+    metadata: {},
+    createdAt: "2026-01-25T08:00:00.000Z",
+    updatedAt: "2026-02-11T08:00:00.000Z",
+    status: "pending"
+  },
+  {
+    id: "n8",
+    workspaceId: "ws-work",
+    type: "note",
+    title: "Stakeholder map",
+    content: "Map teams to required dashboards.",
+    tags: ["analytics", "research"],
+    relations: [{ targetNodeId: "n6", kind: "reference" }],
+    metadata: {},
+    createdAt: "2026-01-29T08:20:00.000Z",
+    updatedAt: "2026-02-09T08:20:00.000Z"
+  },
+  {
+    id: "n9",
+    workspaceId: "ws-work",
+    type: "event",
+    title: "Metrics review",
+    content: "Review metrics before launch.",
+    tags: ["q1", "meeting"],
+    relations: [{ targetNodeId: "n6", kind: "milestone" }],
+    metadata: { startAt: "2026-02-25" },
+    createdAt: "2026-02-01T14:15:00.000Z",
+    updatedAt: "2026-02-01T14:15:00.000Z"
+  },
+  {
+    id: "n10",
+    workspaceId: "ws-work",
+    type: "idea",
+    title: "Auto narrative",
+    content: "Generate insights from trends.",
+    tags: ["analytics", "idea"],
+    relations: [{ targetNodeId: "n6", kind: "inspire" }],
+    metadata: {},
+    createdAt: "2026-02-03T12:00:00.000Z",
+    updatedAt: "2026-02-03T12:00:00.000Z"
+  }
+];
