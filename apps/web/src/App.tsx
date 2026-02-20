@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import type { NodeEntity } from "@rehilo/domain";
-import { createNode, parseHybridInput } from "@rehilo/domain";
+import type { CreateNodeInput, NodeEntity } from "@rehilo/domain";
+import { createNode, getNodeRelationIds, parseHybridInput } from "@rehilo/domain";
 import FilterBar from "./components/FilterBar";
 import CaptureDialog from "./components/CaptureDialog";
-import CommandBar from "./components/CommandBar";
 import ErrorBoundary from "./components/ErrorBoundary";
-import GraphScene from "./components/GraphScene";
+import GraphScene2D from "./components/GraphScene2D";
 import CaptureHistoryPanel, { type CaptureHistoryItem } from "./components/CaptureHistoryPanel";
 import ToastStack, { type ToastItem, type ToastTone } from "./components/ToastStack";
-import ViewSwitcher from "./components/ViewSwitcher";
 import DashboardView from "./components/dashboard/DashboardView";
-import ListView from "./components/ListView";
-import NodeDetailView from "./components/NodeDetailView";
 import { demoNodes } from "./data/demoGraph";
-import { buildGraphEdges, filterNodes, parseTagQuery } from "./lib/graph-utils";
+import {
+  buildGraphEdges,
+  filterNodes,
+  listUnlinkedNodes,
+  parseTagQuery,
+  suggestLinksForUnlinked
+} from "./lib/graph-utils";
 import {
   type WorkspaceLayoutState,
   loadWorkspaceLayout,
@@ -25,16 +27,20 @@ import { subscribeCaptureEvents } from "./lib/capture-events";
 import { deriveTitleFromText, isProbablyUrl } from "./lib/capture-utils";
 
 const EMPTY_SELECTION = "";
-type ViewMode = "dashboard" | "list" | "graph" | "node";
+type ViewMode = "dashboard" | "graph";
+type SelectionState = "none" | "tooltip" | "detail";
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
+  const [dashboardCollapsed, setDashboardCollapsed] = useState(false);
+  const [selectionState, setSelectionState] = useState<SelectionState>("none");
   const [nodes, setNodes] = useState<NodeEntity[]>([]);
   const [workspaceId, setWorkspaceId] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [tagQuery, setTagQuery] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [showUnlinkedOnly, setShowUnlinkedOnly] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState(EMPTY_SELECTION);
   const [layoutState, setLayoutState] = useState<WorkspaceLayoutState>(() =>
     loadWorkspaceLayout("all")
@@ -44,7 +50,6 @@ export default function App() {
   const [captureStatus, setCaptureStatus] = useState<string | null>(null);
   const [captureHistory, setCaptureHistory] = useState<CaptureHistoryItem[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const [commandValue, setCommandValue] = useState("");
   const repo = useMemo(() => createOfflineNodeRepository(), []);
 
   const workspaces = useMemo(() => {
@@ -75,10 +80,25 @@ export default function App() {
   );
 
   const filteredNodes = useMemo<NodeEntity[]>(() => filterNodes(nodes, filters), [filters, nodes]);
-  const edges = useMemo(() => buildGraphEdges(filteredNodes), [filteredNodes]);
+  const workspaceScopedNodes = useMemo(
+    () => (workspaceId === "all" ? nodes : nodes.filter((node) => node.workspaceId === workspaceId)),
+    [nodes, workspaceId]
+  );
+  const unlinkedNodes = useMemo(() => listUnlinkedNodes(workspaceScopedNodes), [workspaceScopedNodes]);
+  const unlinkedNodeIds = useMemo(() => new Set(unlinkedNodes.map((node) => node.id)), [unlinkedNodes]);
+  const visibleNodes = useMemo(
+    () => (showUnlinkedOnly ? filteredNodes.filter((node) => unlinkedNodeIds.has(node.id)) : filteredNodes),
+    [filteredNodes, showUnlinkedOnly, unlinkedNodeIds]
+  );
+  const edges = useMemo(() => buildGraphEdges(visibleNodes), [visibleNodes]);
 
-  const selectedNode = filteredNodes.find((node) => node.id === selectedNodeId) ?? null;
-  const webglAvailable = useMemo(() => isWebGLAvailable(), []);
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedNodeSuggestions = useMemo(() => {
+    if (!selectedNode || !unlinkedNodeIds.has(selectedNode.id)) {
+      return [];
+    }
+    return suggestLinksForUnlinked(selectedNode, workspaceScopedNodes, 5);
+  }, [selectedNode, unlinkedNodeIds, workspaceScopedNodes]);
 
   useEffect(() => {
     setLayoutState(loadWorkspaceLayout(workspaceId));
@@ -112,6 +132,21 @@ export default function App() {
   const handleLayoutChange = (next: WorkspaceLayoutState) => {
     setLayoutState(next);
     saveWorkspaceLayout(workspaceId, next);
+  };
+
+  const handleSelectNode = (id: string) => {
+    // First click: show tooltip
+    if (selectedNodeId !== id) {
+      setSelectedNodeId(id);
+      setSelectionState("tooltip");
+    } else if (selectionState === "tooltip") {
+      // Second click on same node: show detail panel
+      setSelectionState("detail");
+    } else {
+      // Already showing detail, clicking another node shows its tooltip
+      setSelectedNodeId(id);
+      setSelectionState("tooltip");
+    }
   };
 
   const refreshNodes = async () => {
@@ -156,6 +191,7 @@ export default function App() {
     setCaptureStatus(`Captured link: ${url}`);
     pushToast("Link captured", "success");
     pushHistory({ type: "link", title: url });
+    return node;
   };
 
   const createNoteNode = async (text: string, title?: string) => {
@@ -171,6 +207,7 @@ export default function App() {
     setCaptureStatus("Captured note");
     pushToast("Note captured", "success");
     pushHistory({ type: title ? "file" : "note", title: resolvedTitle, detail: title ? "Imported file" : undefined });
+    return node;
   };
 
   const handleCaptureSubmit = async () => {
@@ -181,11 +218,48 @@ export default function App() {
       return;
     }
 
-    if (isProbablyUrl(value)) {
-      await createLinkNode(value);
+    // Try to parse as hybrid input (structured command)
+    const parsed = parseHybridInput(value, {
+      workspaceId: resolveWorkspaceId(),
+      defaultNaturalType: "note"
+    });
+
+    const createdNodes: NodeEntity[] = [];
+    let primary: NodeEntity;
+
+    // If it's a structured command (hierarchy), process it
+    if (parsed.mode === "structured" && parsed.structured.ok && parsed.structured.pathSegments.length > 1) {
+      const hierarchyResult = await captureHierarchicalPath(
+        parsed.structured.pathSegments,
+        parsed.primary,
+        parsed.secondary
+      );
+      primary = hierarchyResult.primary;
+      createdNodes.push(...hierarchyResult.created);
+
+      await refreshNodes();
+
+      pushToast(
+        `Command captured: ${primary.type}`,
+        "success"
+      );
+    } else if (isProbablyUrl(value)) {
+      // It's a URL
+      primary = await createLinkNode(value);
+      createdNodes.push(primary);
+      pushToast("Link captured", "info");
     } else {
-      await createNoteNode(value);
+      // It's a plain note
+      primary = await createNoteNode(value);
+      createdNodes.push(primary);
+      pushToast("Note captured", "info");
     }
+
+    pushHistory({
+      type: (primary.type === "link" ? "link" : primary.type === "note" ? "note" : "file") as "link" | "note" | "file",
+      title: primary.title,
+      detail: createdNodes.length > 1 ? `+${createdNodes.length - 1} linked` : undefined
+    });
 
     setCaptureValue("");
     setCaptureOpen(false);
@@ -201,44 +275,111 @@ export default function App() {
     setCaptureOpen(false);
   };
 
-  const handleCommandSubmit = async () => {
-    const value = commandValue.trim();
-    if (!value) {
-      pushToast("Command is empty", "warning");
+  const handleConnectNodes = async (
+    sourceId: string,
+    targetId: string,
+    mode: "relation" | "hierarchy"
+  ) => {
+    if (sourceId === targetId) {
       return;
     }
 
-    const parsed = parseHybridInput(value, {
-      workspaceId: resolveWorkspaceId(),
-      defaultNaturalType: "note"
-    });
+    const sourceNode = nodes.find((node) => node.id === sourceId);
+    const targetNode = nodes.find((node) => node.id === targetId);
+    if (!sourceNode || !targetNode) {
+      return;
+    }
 
-    const createdNodes: NodeEntity[] = [];
-    const primary = createNode(parsed.primary);
-    createdNodes.push(primary);
-    parsed.secondary.forEach((input) => createdNodes.push(createNode(input)));
+    const workspaceId = resolveWorkspaceId();
 
-    for (const node of createdNodes) {
-      await repo.save(node);
+    if (mode === "hierarchy") {
+      await repo.update(workspaceId, sourceId, { parentId: targetId });
+      pushToast("Hierarchy connected", "success");
+    } else {
+      const sourceRelations = new Set(getNodeRelationIds(sourceNode));
+      const targetRelations = new Set(getNodeRelationIds(targetNode));
+      sourceRelations.add(targetId);
+      targetRelations.add(sourceId);
+
+      await repo.update(workspaceId, sourceId, { relationIds: Array.from(sourceRelations) });
+      await repo.update(workspaceId, targetId, { relationIds: Array.from(targetRelations) });
+      pushToast("Relation connected", "success");
     }
 
     await refreshNodes();
+  };
 
-    const tone: ToastTone = parsed.mode === "structured" ? "success" : "info";
-    pushToast(
-      parsed.mode === "structured"
-        ? `Command captured: ${primary.type}`
-        : "Captured as note",
-      tone
-    );
+  const captureHierarchicalPath = async (
+    pathSegments: string[],
+    primaryInput: CreateNodeInput,
+    parentInputs: CreateNodeInput[]
+  ) => {
+    const workspace = resolveWorkspaceId();
+    const workspaceNodes = await repo.listByWorkspace(workspace);
+    const created: NodeEntity[] = [];
 
-    pushHistory({
-      type: primary.type === "link" ? "link" : primary.type === "note" ? "note" : "note",
-      title: primary.title,
-      detail: parsed.secondary.length > 0 ? `+${parsed.secondary.length} linked` : undefined
-    });
+    let currentParentId: string | null = null;
+    let primary: NodeEntity | null = null;
 
-    setCommandValue("");
+    for (let index = 0; index < pathSegments.length; index += 1) {
+      const title = pathSegments[index]?.trim();
+      if (!title) {
+        continue;
+      }
+
+      const isLeaf = index === pathSegments.length - 1;
+      const existing = workspaceNodes.find(
+        (node) => node.parentId === currentParentId && node.title.trim().toLowerCase() === title.toLowerCase()
+      );
+
+      if (existing) {
+        if (isLeaf) {
+          primary = existing;
+        }
+        currentParentId = existing.id;
+        continue;
+      }
+
+      const sourceInput = isLeaf
+        ? primaryInput
+        : parentInputs[index] ?? {
+            workspaceId: workspace,
+            type: "project",
+            title,
+            content: "",
+            metadata: { autoGeneratedParent: true }
+          };
+
+      const node = createNode({
+        ...sourceInput,
+        workspaceId: workspace,
+        title,
+        parentId: currentParentId
+      });
+
+      await repo.save(node);
+      workspaceNodes.push(node);
+      created.push(node);
+
+      if (isLeaf) {
+        primary = node;
+      }
+
+      currentParentId = node.id;
+    }
+
+    if (!primary) {
+      primary = createNode({
+        ...primaryInput,
+        workspaceId: workspace,
+        title: primaryInput.title,
+        parentId: currentParentId
+      });
+      await repo.save(primary);
+      created.push(primary);
+    }
+
+    return { primary, created };
   };
 
   useEffect(() => {
@@ -286,13 +427,20 @@ export default function App() {
       <header className="top-bar">
         <div className="brand">
           <span className="brand-title">Rehilo Graph</span>
-          <span className="brand-subtitle">3D workspace map</span>
+          <span className="brand-subtitle">Spatial knowledge map</span>
         </div>
         <button type="button" className="capture-button" onClick={() => setCaptureOpen(true)}>
           Quick capture
         </button>
-        <CommandBar value={commandValue} onChange={setCommandValue} onSubmit={handleCommandSubmit} />
-        <ViewSwitcher value={viewMode} onChange={setViewMode} />
+        <button
+          type="button"
+          className="capture-button"
+          onClick={() => {
+            setShowUnlinkedOnly((prev) => !prev);
+          }}
+        >
+          Unlinked ({unlinkedNodes.length})
+        </button>
         <FilterBar
           workspaces={workspaces}
           types={types}
@@ -310,21 +458,49 @@ export default function App() {
         />
       </header>
 
-      <main className="main-grid">
-        <section className="graph-panel">
-          {viewMode === "dashboard" && (
-            <DashboardView
-              nodes={filteredNodes}
-              workspaceId={workspaceId}
-              layoutState={layoutState}
-              onLayoutChange={handleLayoutChange}
-              onSelectNode={setSelectedNodeId}
-            />
+      <main className="main-grid-new">
+        {/* Tab Headers */}
+        <div className="tab-headers">
+          <button
+            className={`tab-button ${viewMode === "dashboard" ? "active" : ""}`}
+            onClick={() => setViewMode("dashboard")}
+          >
+            Dashboard
+          </button>
+          <button
+            className={`tab-button ${viewMode === "graph" ? "active" : ""}`}
+            onClick={() => setViewMode("graph")}
+          >
+            Graph Map
+          </button>
+          {!dashboardCollapsed && (
+            <button
+              className="tab-collapse"
+              onClick={() => setDashboardCollapsed(true)}
+              title="Collapse dashboard to expand graph"
+            >
+              ◀
+            </button>
           )}
-          {viewMode === "list" && (
-            <ListView nodes={filteredNodes} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
+        </div>
+
+        {/* Main Content Area */}
+        <div className="main-content">
+          {/* Left Panel: Dashboard (collapsible) - Always present unless collapsed */}
+          {!dashboardCollapsed && (
+            <div className="dashboard-panel">
+              <DashboardView
+                nodes={visibleNodes}
+                workspaceId={workspaceId}
+                layoutState={layoutState}
+                onLayoutChange={handleLayoutChange}
+                onSelectNode={handleSelectNode}
+              />
+            </div>
           )}
-          {viewMode === "graph" && (
+
+          {/* Center: Graph - Always present */}
+          <section className={`graph-panel ${dashboardCollapsed ? "expanded" : ""}`}>
             <ErrorBoundary
               fallback={
                 <div className="empty-state">
@@ -333,75 +509,85 @@ export default function App() {
                 </div>
               }
             >
-              {webglAvailable ? (
-                <GraphScene
-                  nodes={filteredNodes}
-                  edges={edges}
-                  selectedNodeId={selectedNodeId}
-                  onSelectNode={setSelectedNodeId}
-                />
-              ) : (
-                <div className="empty-state">
-                  <h3>WebGL is not available</h3>
-                  <p>Try a different browser or enable hardware acceleration.</p>
-                </div>
-              )}
+              <GraphScene2D
+                nodes={visibleNodes}
+                edges={edges}
+                selectedNodeId={selectedNodeId}
+                onSelectNode={handleSelectNode}
+                onConnectNodes={handleConnectNodes}
+                selectedNodeTooltip={selectionState === "tooltip" ? selectedNode?.title : undefined}
+              />
             </ErrorBoundary>
-          )}
-          {viewMode === "node" && (
-            <NodeDetailView node={selectedNode} nodes={filteredNodes} />
-          )}
-          {filteredNodes.length === 0 && viewMode !== "node" && (
-            <div className="empty-state">
-              <h3>No nodes match the current filters</h3>
-              <p>Try relaxing the tag or date range filters.</p>
-            </div>
-          )}
-        </section>
+            {visibleNodes.length === 0 && (
+              <div className="empty-state">
+                <h3>No nodes match the current filters</h3>
+                <p>{showUnlinkedOnly ? "No unlinked nodes in this scope." : "Try relaxing the filters."}</p>
+              </div>
+            )}
+          </section>
 
-        <aside className="info-panel">
-          <div className="panel-card">
-            <h2>Selection</h2>
-            {selectedNode ? (
-              <div className="panel-content">
-                <p className="title">{selectedNode.title}</p>
-                <p className="meta">Type: {selectedNode.type}</p>
-                <p className="meta">Workspace: {selectedNode.workspaceId}</p>
-                <div className="tag-list">
-                  {selectedNode.tags.length > 0 ? (
-                    selectedNode.tags.map((tag) => (
-                      <span className="tag" key={tag}>
-                        #{tag}
-                      </span>
-                    ))
+          {/* Right Panel: Node Details (appears on second click) */}
+          {selectionState === "detail" && selectedNode && (
+            <aside className="info-panel">
+              <button
+                className="close-panel"
+                onClick={() => setSelectionState("tooltip")}
+                title="Close details"
+              >
+                ✕
+              </button>
+              <div className="panel-card">
+                <h2>{selectedNode.title}</h2>
+                <div className="panel-content">
+                  <p className="meta">Type: <strong>{selectedNode.type}</strong></p>
+                  <p className="meta">Workspace: <strong>{selectedNode.workspaceId}</strong></p>
+                  <div className="tag-list">
+                    {selectedNode.tags.length > 0 ? (
+                      selectedNode.tags.map((tag) => (
+                        <span className="tag" key={tag}>
+                          #{tag}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="tag muted">No tags</span>
+                    )}
+                  </div>
+                  <p className="meta">Created: <strong>{selectedNode.createdAt.slice(0, 10)}</strong></p>
+                </div>
+              </div>
+
+              {selectedNode && unlinkedNodeIds.has(selectedNode.id) && (
+                <div className="panel-card">
+                  <h3>Unlinked suggestions</h3>
+                  {selectedNodeSuggestions.length === 0 ? (
+                    <p className="meta muted">No suggestions by title/tag similarity.</p>
                   ) : (
-                    <span className="tag muted">No tags</span>
+                    <div className="panel-content">
+                      {selectedNodeSuggestions.map((suggestion) => (
+                        <p key={suggestion.target.id} className="meta">
+                          {suggestion.target.title}
+                        </p>
+                      ))}
+                    </div>
                   )}
                 </div>
-                <p className="meta">Created: {selectedNode.createdAt.slice(0, 10)}</p>
-              </div>
-            ) : (
-              <p className="meta">Select a node to inspect details.</p>
-            )}
-          </div>
+              )}
 
-          <div className="panel-card legend">
-            <h2>Legend</h2>
-            <div className="legend-row">
-              <span className="dot selected"></span>
-              <span>Selected node</span>
-            </div>
-            <div className="legend-row">
-              <span className="dot direct"></span>
-              <span>Direct relations</span>
-            </div>
-            <div className="legend-row">
-              <span className="dot depth"></span>
-              <span>Depth connections</span>
-            </div>
-          </div>
-          <CaptureHistoryPanel items={captureHistory} />
-        </aside>
+              <div className="panel-card legend">
+                <h3>Legend</h3>
+                <div className="legend-row">
+                  <span className="dot selected"></span>
+                  <span>Selected node</span>
+                </div>
+                <div className="legend-row">
+                  <span className="dot direct"></span>
+                  <span>Direct relations</span>
+                </div>
+              </div>
+              <CaptureHistoryPanel items={captureHistory} />
+            </aside>
+          )}
+        </div>
       </main>
 
       <CaptureDialog
@@ -416,21 +602,4 @@ export default function App() {
       <ToastStack items={toasts} />
     </div>
   );
-}
-
-function isWebGLAvailable(): boolean {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  try {
-    const canvas = document.createElement("canvas");
-    const hasContext = !!(
-      window.WebGLRenderingContext &&
-      (canvas.getContext("webgl") || canvas.getContext("experimental-webgl"))
-    );
-    return hasContext;
-  } catch {
-    return false;
-  }
 }
