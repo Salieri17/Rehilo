@@ -58,7 +58,9 @@ export default function GraphScene({ nodes, edges, selectedNodeId, onSelectNode 
 
 function GraphContent({ nodes, edges, selectedNodeId, onSelectNode }: GraphSceneProps) {
   const nodeRefs = useRef<Record<string, THREE.Mesh | null>>({});
-  const lineGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const hierarchyGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const relationGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const crossGeometryRef = useRef<THREE.BufferGeometry | null>(null);
   const highlightGeometryRef = useRef<THREE.BufferGeometry | null>(null);
 
   const simNodes = useMemo<GraphNode[]>(() => {
@@ -81,24 +83,40 @@ function GraphContent({ nodes, edges, selectedNodeId, onSelectNode }: GraphScene
     edges
   ]);
 
-  const baseEdgeLinks = useMemo(() => edges.filter((edge) => !directEdgeSet.has(edgeKey(edge))), [
-    edges,
-    directEdgeSet
-  ]);
+  const hierarchyLinks = useMemo(
+    () => edges.filter((edge) => edge.edgeType === "hierarchy" && !directEdgeSet.has(edgeKey(edge))),
+    [edges, directEdgeSet]
+  );
+  const relationLinks = useMemo(
+    () => edges.filter((edge) => edge.edgeType === "relation" && !directEdgeSet.has(edgeKey(edge))),
+    [edges, directEdgeSet]
+  );
+  const crossLinks = useMemo(
+    () => edges.filter((edge) => edge.edgeType === "cross-workspace" && !directEdgeSet.has(edgeKey(edge))),
+    [edges, directEdgeSet]
+  );
   const directEdgeLinks = useMemo(() => edges.filter((edge) => directEdgeSet.has(edgeKey(edge))), [
     edges,
     directEdgeSet
   ]);
 
-  const baseLinePositions = useMemo(() => new Float32Array(baseEdgeLinks.length * 6), [baseEdgeLinks.length]);
+  const hierarchyPositions = useMemo(() => new Float32Array(hierarchyLinks.length * 6), [hierarchyLinks.length]);
+  const relationPositions = useMemo(() => new Float32Array(relationLinks.length * 6), [relationLinks.length]);
+  const crossPositions = useMemo(() => new Float32Array(crossLinks.length * 6), [crossLinks.length]);
   const highlightLinePositions = useMemo(
     () => new Float32Array(directEdgeLinks.length * 6),
     [directEdgeLinks.length]
   );
 
   useEffect(() => {
-    if (lineGeometryRef.current) {
-      lineGeometryRef.current.setAttribute("position", new THREE.BufferAttribute(baseLinePositions, 3));
+    if (hierarchyGeometryRef.current) {
+      hierarchyGeometryRef.current.setAttribute("position", new THREE.BufferAttribute(hierarchyPositions, 3));
+    }
+    if (relationGeometryRef.current) {
+      relationGeometryRef.current.setAttribute("position", new THREE.BufferAttribute(relationPositions, 3));
+    }
+    if (crossGeometryRef.current) {
+      crossGeometryRef.current.setAttribute("position", new THREE.BufferAttribute(crossPositions, 3));
     }
     if (highlightGeometryRef.current) {
       highlightGeometryRef.current.setAttribute(
@@ -106,7 +124,7 @@ function GraphContent({ nodes, edges, selectedNodeId, onSelectNode }: GraphScene
         new THREE.BufferAttribute(highlightLinePositions, 3)
       );
     }
-  }, [baseLinePositions, highlightLinePositions]);
+  }, [hierarchyPositions, relationPositions, crossPositions, highlightLinePositions]);
 
   useEffect(() => {
     if (simNodes.length === 0) {
@@ -137,11 +155,19 @@ function GraphContent({ nodes, edges, selectedNodeId, onSelectNode }: GraphScene
       }
     }
 
-    updateLinePositions(baseEdgeLinks, baseLinePositions, nodeById);
+    updateLinePositions(hierarchyLinks, hierarchyPositions, nodeById);
+    updateLinePositions(relationLinks, relationPositions, nodeById);
+    updateLinePositions(crossLinks, crossPositions, nodeById);
     updateLinePositions(directEdgeLinks, highlightLinePositions, nodeById);
 
-    if (lineGeometryRef.current) {
-      lineGeometryRef.current.attributes.position.needsUpdate = true;
+    if (hierarchyGeometryRef.current) {
+      hierarchyGeometryRef.current.attributes.position.needsUpdate = true;
+    }
+    if (relationGeometryRef.current) {
+      relationGeometryRef.current.attributes.position.needsUpdate = true;
+    }
+    if (crossGeometryRef.current) {
+      crossGeometryRef.current.attributes.position.needsUpdate = true;
     }
     if (highlightGeometryRef.current) {
       highlightGeometryRef.current.attributes.position.needsUpdate = true;
@@ -155,8 +181,18 @@ function GraphContent({ nodes, edges, selectedNodeId, onSelectNode }: GraphScene
       <OrbitControls enableDamping dampingFactor={0.08} />
 
       <lineSegments>
-        <bufferGeometry ref={lineGeometryRef} />
-        <lineBasicMaterial color="#cbd5f5" opacity={0.45} transparent />
+        <bufferGeometry ref={hierarchyGeometryRef} />
+        <lineBasicMaterial color="#8b5cf6" opacity={0.55} transparent />
+      </lineSegments>
+
+      <lineSegments>
+        <bufferGeometry ref={relationGeometryRef} />
+        <lineBasicMaterial color="#94a3b8" opacity={0.4} transparent />
+      </lineSegments>
+
+      <lineSegments>
+        <bufferGeometry ref={crossGeometryRef} />
+        <lineBasicMaterial color="#10b981" opacity={0.55} transparent />
       </lineSegments>
 
       <lineSegments>

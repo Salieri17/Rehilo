@@ -1,4 +1,4 @@
-import type { NodeEntity } from "./node";
+import { getNodeRelationIds, type NodeEntity } from "./node";
 
 export interface ContextEngineOptions {
   recentlyConnectedLimit?: number;
@@ -49,13 +49,11 @@ export function buildNodeContext(
   const workspaceNodes = allNodes.filter((candidate) => candidate.workspaceId === node.workspaceId);
   const nodesById = new Map(workspaceNodes.map((candidate) => [candidate.id, candidate]));
 
-  const directRelations = node.relations
-    .map((relation) => nodesById.get(relation.targetNodeId))
+  const directRelations = getNodeRelationIds(node)
+    .map((targetNodeId) => nodesById.get(targetNodeId))
     .filter((candidate): candidate is NodeEntity => Boolean(candidate));
 
-  const backlinks = workspaceNodes.filter((candidate) =>
-    candidate.relations.some((relation) => relation.targetNodeId === node.id)
-  );
+  const backlinks = workspaceNodes.filter((candidate) => getNodeRelationIds(candidate).includes(node.id));
 
   const sharedTagNodes = workspaceNodes.filter((candidate) => {
     if (candidate.id === node.id) {

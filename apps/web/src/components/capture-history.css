@@ -11,6 +11,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  color: var(--text-primary);
 }
 
 .capture-history strong {
@@ -21,8 +22,15 @@
 .capture-history .chip {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
+  border-radius: var(--border-radius-full);
+  background: var(--border-color);
+  color: var(--text-tertiary);
+  transition: all var(--duration-quick) var(--easing-smooth);
+}
+
+.capture-history .chip:hover {
+  background: var(--border-color);
+  color: var(--text-secondary);
 }

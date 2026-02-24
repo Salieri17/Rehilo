@@ -37,13 +37,13 @@ export default function CaptureDialog({
       <div className="capture-card">
         <header>
           <h2>Quick capture</h2>
-          <p className="muted">Paste text or URL. Import .txt files here.</p>
+          <p className="muted">Text • URL • Commands • Hierarchy</p>
         </header>
 
         <textarea
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Type a note or paste a URL..."
+          placeholder="Example: T/ProjectX/Task1&#10;Or: My quick note&#10;Or: https://example.com"
           rows={5}
         />
 

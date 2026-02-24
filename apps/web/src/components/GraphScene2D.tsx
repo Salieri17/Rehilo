@@ -1,7 +1,12 @@
+import { Html, Line, MapControls } from "@react-three/drei";
+import type { ThreeEvent } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
+import type { MutableRefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
 import type { NodeEntity } from "@rehilo/domain";
 import type { GraphEdge } from "../lib/graph-utils";
-import { Graph2DLayout, type LayoutEdge } from "../lib/graph-layout-2d";
+import { Graph2DLayout } from "../lib/graph-layout-2d";
 import "./GraphScene2D.css";
 
 interface GraphScene2DProps {
@@ -13,25 +18,19 @@ interface GraphScene2DProps {
   selectedNodeTooltip?: string;
 }
 
-interface ViewState {
-  pan: { x: number; y: number };
-  zoom: number;
-  animating: boolean;
-}
-
-interface DragState {
-  isDragging: boolean;
-  startX: number;
-  startY: number;
-  startPanX: number;
-  startPanY: number;
-}
+type RenderEdge = {
+  source: string;
+  target: string;
+  edgeType: "hierarchy" | "relation" | "cross-workspace";
+  points: [number, number, number][];
+};
 
 interface NodeDragState {
   isDragging: boolean;
   nodeId: string | null;
   startWorld: { x: number; y: number };
   startNode: { x: number; y: number };
+  startClient: { x: number; y: number };
   currentPos: { x: number; y: number } | null;
   dragged: boolean;
 }
@@ -43,8 +42,15 @@ interface LassoState {
 
 const HIERARCHY_COLORS = ["#cbb36a", "#9bb86a", "#7ba866", "#5f965d", "#4a824f"];
 const NEUTRAL_GREEN = "#5f7f63";
+const EDGE_COLORS = {
+  hierarchy: "#8b5cf6",
+  relation: "#94a3b8",
+  "cross-workspace": "#10b981"
+} as const;
 
-type ViewMode = "exploration" | "contextual";
+const NODE_Z = 0;
+const EDGE_Z = -0.5;
+const MAX_WORLD_COORD = 8000;
 
 export default function GraphScene2D({
   nodes,
@@ -54,41 +60,40 @@ export default function GraphScene2D({
   onConnectNodes,
   selectedNodeTooltip
 }: GraphScene2DProps) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const focusAnimRef = useRef<number | null>(null);
-  const transitionAnimRef = useRef<number | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("exploration");
-  const [viewState, setViewState] = useState<ViewState>({
-    pan: { x: 0, y: 0 },
-    zoom: 1,
-    animating: true
-  });
   const [depthLimit, setDepthLimit] = useState(3);
   const [showRelations, setShowRelations] = useState(true);
-  const [dragState, setDragState] = useState<DragState>({
-    isDragging: false,
-    startX: 0,
-    startY: 0,
-    startPanX: 0,
-    startPanY: 0
+  const [fitViewToken, setFitViewToken] = useState(1);
+  const [layoutAnchorId, setLayoutAnchorId] = useState("");
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [manualPositions, setManualPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [lassoSelectedIds, setLassoSelectedIds] = useState<Set<string>>(new Set());
+  const renderRuntimeRef = useRef<{ camera: THREE.OrthographicCamera | null; canvas: HTMLCanvasElement | null }>({
+    camera: null,
+    canvas: null
   });
   const [nodeDragState, setNodeDragState] = useState<NodeDragState>({
     isDragging: false,
     nodeId: null,
     startWorld: { x: 0, y: 0 },
     startNode: { x: 0, y: 0 },
+    startClient: { x: 0, y: 0 },
     currentPos: null,
     dragged: false
   });
-  const [lassoState, setLassoState] = useState<LassoState>({
-    isActive: false,
-    points: []
-  });
-  const [manualPositions, setManualPositions] = useState<Record<string, { x: number; y: number }>>({});
-  const [lassoSelectedIds, setLassoSelectedIds] = useState<Set<string>>(new Set());
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [lassoState, setLassoState] = useState<LassoState>({ isActive: false, points: [] });
 
-  // Calculate layout based on view mode
+  useEffect(() => {
+    if (nodes.length === 0) {
+      setLayoutAnchorId("");
+      return;
+    }
+
+    if (!layoutAnchorId || !nodes.some((node) => node.id === layoutAnchorId)) {
+      setLayoutAnchorId(nodes[0].id);
+    }
+  }, [nodes, layoutAnchorId]);
+
   const layout = useMemo(() => {
     const layoutEngine = new Graph2DLayout({
       hierarchyVerticalGap: 140,
@@ -98,115 +103,8 @@ export default function GraphScene2D({
       nodeRadius: 28
     });
 
-    if (viewMode === "contextual") {
-      return layoutEngine.layoutContextual(nodes, edges, selectedNodeId);
-    }
-
-    return layoutEngine.layout(nodes, edges, selectedNodeId, depthLimit);
-  }, [nodes, edges, selectedNodeId, depthLimit, viewMode]);
-
-  // Calculate bounds for auto-zoom
-  const bounds = useMemo(() => {
-    let minX = 0,
-      minY = 0,
-      maxX = 0,
-      maxY = 0;
-
-    layout.nodes.forEach((node) => {
-      minX = Math.min(minX, node.x - node.radius);
-      maxX = Math.max(maxX, node.x + node.radius);
-      minY = Math.min(minY, node.y - node.radius);
-      maxY = Math.max(maxY, node.y + node.radius);
-    });
-
-    const padding = 80;
-    return { minX: minX - padding, maxX: maxX + padding, minY: minY - padding, maxY: maxY + padding };
-  }, [layout.nodes]);
-
-  // Auto-center and zoom view
-  useEffect(() => {
-    if (!svgRef.current) return;
-
-    if (!viewState.animating) {
-      return;
-    }
-
-    const svg = svgRef.current;
-    const width = svg.clientWidth;
-    const height = svg.clientHeight;
-
-    const boundsWidth = bounds.maxX - bounds.minX;
-    const boundsHeight = bounds.maxY - bounds.minY;
-
-    const zoomX = width / boundsWidth;
-    const zoomY = height / boundsHeight;
-    const zoom = Math.min(zoomX, zoomY, 2); // Cap zoom at 2x
-
-    const centerX = (bounds.minX + bounds.maxX) / 2;
-    const centerY = (bounds.minY + bounds.maxY) / 2;
-
-    const panX = width / 2 - centerX * zoom;
-    const panY = height / 2 - centerY * zoom;
-
-    setViewState((prev) => ({
-      ...prev,
-      zoom: zoom * 0.95, // Slight padding
-      pan: { x: panX, y: panY },
-      animating: false
-    }));
-  }, [bounds, viewState.animating]);
-
-  useEffect(() => {
-    if (nodes.length > 0) {
-      setViewState((prev) => ({ ...prev, animating: true }));
-    }
-  }, [nodes.length]);
-
-  // Handle mouse wheel zoom with native event listener (passive: false to allow preventDefault)
-  // This is done in the useEffect below to properly prevent page scroll
-
-  const getWorldPoint = (clientX: number, clientY: number) => {
-    if (!svgRef.current) {
-      return { x: 0, y: 0 };
-    }
-    const rect = svgRef.current.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left - viewState.pan.x) / viewState.zoom,
-      y: (clientY - rect.top - viewState.pan.y) / viewState.zoom
-    };
-  };
-
-  const buildLassoPath = (points: Array<{ x: number; y: number }>) => {
-    if (points.length === 0) {
-      return "";
-    }
-    const [first, ...rest] = points;
-    return `M ${first.x} ${first.y} ${rest.map((p) => `L ${p.x} ${p.y}`).join(" ")} Z`;
-  };
-
-  const isPointInPolygon = (point: { x: number; y: number }, polygon: Array<{ x: number; y: number }>) => {
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const xi = polygon[i].x;
-      const yi = polygon[i].y;
-      const xj = polygon[j].x;
-      const yj = polygon[j].y;
-
-      const intersect = yi > point.y !== yj > point.y && point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
-      if (intersect) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  };
-
-  // Filter edges based on depth limit and relation visibility
-  const filteredEdges = useMemo(() => {
-    if (!showRelations) {
-      return layout.edges.filter((e) => e.edgeType === "hierarchy");
-    }
-    return layout.edges;
-  }, [layout.edges, showRelations]);
+    return layoutEngine.layout(nodes, edges, layoutAnchorId, depthLimit);
+  }, [nodes, edges, selectedNodeId, depthLimit, layoutAnchorId]);
 
   const layoutNodesFinal = useMemo(() => {
     return layout.nodes.map((node) => {
@@ -221,247 +119,7 @@ export default function GraphScene2D({
     });
   }, [layout.nodes, manualPositions, nodeDragState]);
 
-  const nodeById = useMemo(() => new Map(layoutNodesFinal.map((n) => [n.id, n])), [layoutNodesFinal]);
-
-  const findDropTarget = (worldPoint: { x: number; y: number }, excludeId: string): string | null => {
-    const radius = 34;
-    let closestId: string | null = null;
-    let closestDist = Infinity;
-
-    layoutNodesFinal.forEach((node) => {
-      if (node.id === excludeId) {
-        return;
-      }
-      const dx = node.x - worldPoint.x;
-      const dy = node.y - worldPoint.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist <= radius && dist < closestDist) {
-        closestId = node.id;
-        closestDist = dist;
-      }
-    });
-
-    return closestId;
-  };
-
-  // Handle mouse down for drag
-  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (e.button !== 0) return; // Left mouse button only
-    if ((e.target as HTMLElement).closest("circle")) return; // Don't drag if clicking node
-
-    if (e.shiftKey) {
-      const start = getWorldPoint(e.clientX, e.clientY);
-      setLassoState({ isActive: true, points: [start] });
-      setLassoSelectedIds(new Set());
-      return;
-    }
-    
-    setDragState({
-      isDragging: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      startPanX: viewState.pan.x,
-      startPanY: viewState.pan.y
-    });
-  };
-
-  // Handle mouse move for drag
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (lassoState.isActive) {
-      const next = getWorldPoint(e.clientX, e.clientY);
-      setLassoState((prev) => ({
-        ...prev,
-        points: [...prev.points, next]
-      }));
-      return;
-    }
-
-    if (nodeDragState.isDragging && nodeDragState.nodeId) {
-      const current = getWorldPoint(e.clientX, e.clientY);
-      const deltaX = current.x - nodeDragState.startWorld.x;
-      const deltaY = current.y - nodeDragState.startWorld.y;
-      const nextPos = {
-        x: nodeDragState.startNode.x + deltaX,
-        y: nodeDragState.startNode.y + deltaY
-      };
-
-      setNodeDragState((prev) => ({
-        ...prev,
-        currentPos: nextPos,
-        dragged: prev.dragged || Math.hypot(deltaX, deltaY) > 4
-      }));
-
-      setManualPositions((prev) => ({
-        ...prev,
-        [nodeDragState.nodeId as string]: nextPos
-      }));
-
-      setDropTargetId(findDropTarget(nextPos, nodeDragState.nodeId));
-      return;
-    }
-
-    if (!dragState.isDragging) return;
-
-    const deltaX = e.clientX - dragState.startX;
-    const deltaY = e.clientY - dragState.startY;
-
-    setViewState((prev) => ({
-      ...prev,
-      pan: {
-        x: dragState.startPanX + deltaX,
-        y: dragState.startPanY + deltaY
-      }
-    }));
-  };
-
-  // Handle mouse up
-  const handleMouseUp = () => {
-    if (lassoState.isActive) {
-      const polygon = lassoState.points;
-      if (polygon.length > 2) {
-        const selected = new Set<string>();
-        layoutNodesFinal.forEach((node) => {
-          if (isPointInPolygon({ x: node.x, y: node.y }, polygon)) {
-            selected.add(node.id);
-          }
-        });
-        setLassoSelectedIds(selected);
-      }
-      setLassoState({ isActive: false, points: [] });
-      return;
-    }
-
-    if (nodeDragState.isDragging && nodeDragState.nodeId) {
-      if (dropTargetId) {
-        const choice = window.prompt("Connect as: relation or hierarchy?", "relation");
-        if (choice && (choice.toLowerCase() === "relation" || choice.toLowerCase() === "hierarchy")) {
-          onConnectNodes(nodeDragState.nodeId, dropTargetId, choice.toLowerCase() as "relation" | "hierarchy");
-        }
-      }
-      if (nodeDragState.currentPos) {
-        setManualPositions((prev) => ({
-          ...prev,
-          [nodeDragState.nodeId as string]: nodeDragState.currentPos as { x: number; y: number }
-        }));
-      }
-      setDropTargetId(null);
-      setNodeDragState({
-        isDragging: false,
-        nodeId: null,
-        startWorld: { x: 0, y: 0 },
-        startNode: { x: 0, y: 0 },
-        currentPos: null,
-        dragged: false
-      });
-      return;
-    }
-
-    setDragState((prev) => ({
-      ...prev,
-      isDragging: false
-    }));
-  };
-
-  // Handle keyboard controls
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const panStep = 30;
-      const zoomStep = 1.2;
-
-      switch (e.key.toLowerCase()) {
-        case "arrowup":
-          e.preventDefault();
-          setViewState((prev) => ({
-            ...prev,
-            pan: { ...prev.pan, y: prev.pan.y + panStep }
-          }));
-          break;
-        case "arrowdown":
-          e.preventDefault();
-          setViewState((prev) => ({
-            ...prev,
-            pan: { ...prev.pan, y: prev.pan.y - panStep }
-          }));
-          break;
-        case "arrowleft":
-          e.preventDefault();
-          setViewState((prev) => ({
-            ...prev,
-            pan: { ...prev.pan, x: prev.pan.x + panStep }
-          }));
-          break;
-        case "arrowright":
-          e.preventDefault();
-          setViewState((prev) => ({
-            ...prev,
-            pan: { ...prev.pan, x: prev.pan.x - panStep }
-          }));
-          break;
-        case "+":
-        case "=":
-          e.preventDefault();
-          setViewState((prev) => ({
-            ...prev,
-            zoom: Math.min(5, prev.zoom * zoomStep)
-          }));
-          break;
-        case "-":
-          e.preventDefault();
-          setViewState((prev) => ({
-            ...prev,
-            zoom: Math.max(0.1, prev.zoom / zoomStep)
-          }));
-          break;
-        case "r":
-          if (!e.ctrlKey && !e.metaKey) {
-            e.preventDefault();
-            setViewState({
-              pan: { x: 0, y: 0 },
-              zoom: 1,
-              animating: true
-            });
-          }
-          break;
-      }
-    };
-
-    // Add native wheel listener with passive: false to allow preventDefault
-    const handleWheelNative = (e: WheelEvent) => {
-      // Only prevent if over the SVG
-      if (svgRef.current && svgRef.current.contains(e.target as Node)) {
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? 0.85 : 1.15;
-        setViewState((prev) => ({
-          ...prev,
-          zoom: Math.max(0.1, Math.min(5, prev.zoom * delta))
-        }));
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("wheel", handleWheelNative, { passive: false });
-    
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("wheel", handleWheelNative);
-    };
-  }, []);
-
-  // Handle node click
-  const handleNodeClick = (nodeId: string) => {
-    onSelectNode(nodeId);
-  };
-
-  // Handle node double-click to enter contextual mode
-  const handleNodeDoubleClick = (nodeId: string) => {
-    if (viewMode === "exploration") {
-      onSelectNode(nodeId);
-      setViewMode("contextual");
-    } else if (viewMode === "contextual" && nodeId !== selectedNodeId) {
-      // Navigate to another node in contextual mode (smooth transition)
-      onSelectNode(nodeId);
-    }
-  };
+  const nodeByLayoutId = useMemo(() => new Map(layoutNodesFinal.map((node) => [node.id, node])), [layoutNodesFinal]);
 
   const childrenById = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -525,381 +183,507 @@ export default function GraphScene2D({
     return map;
   }, [nodes, childrenById, hierarchyDepths]);
 
-  const edgesFinal = useMemo(() => {
-    return filteredEdges.map((edge) => {
-      const sourcePos = nodeById.get(edge.source);
-      const targetPos = nodeById.get(edge.target);
-      if (!sourcePos || !targetPos) {
+  const filteredEdges = useMemo(() => {
+    if (!showRelations) {
+      return layout.edges.filter((edge) => edge.edgeType === "hierarchy");
+    }
+    return layout.edges;
+  }, [layout.edges, showRelations]);
+
+  const edgesFinal = useMemo<RenderEdge[]>(() => {
+    const renderEdges: RenderEdge[] = [];
+
+    filteredEdges.forEach((edge) => {
+      const source = nodeByLayoutId.get(edge.source);
+      const target = nodeByLayoutId.get(edge.target);
+      if (!source || !target) {
+        return;
+      }
+
+      if (edge.isCurved) {
+        const sourceVec = new THREE.Vector3(source.x, source.y, EDGE_Z);
+        const targetVec = new THREE.Vector3(target.x, target.y, EDGE_Z);
+        const midX = (source.x + target.x) / 2;
+        const midY = (source.y + target.y) / 2;
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const control = new THREE.Vector3(midX + dy * 0.3, midY - dx * 0.3, EDGE_Z);
+        const curve = new THREE.QuadraticBezierCurve3(sourceVec, control, targetVec);
+        const points = curve
+          .getPoints(24)
+          .map((point) => [point.x, point.y, point.z] as [number, number, number]);
+
+        renderEdges.push({
+          source: edge.source,
+          target: edge.target,
+          edgeType: edge.edgeType,
+          points
+        });
+        return;
+      }
+
+      renderEdges.push({
+        source: edge.source,
+        target: edge.target,
+        edgeType: edge.edgeType,
+        points: [
+          [source.x, source.y, EDGE_Z],
+          [target.x, target.y, EDGE_Z]
+        ]
+      });
+    });
+
+    return renderEdges;
+  }, [filteredEdges, nodeByLayoutId]);
+
+  const relatedNodeIds = useMemo(() => {
+    const related = new Set<string>();
+    if (!selectedNodeId) {
+      return related;
+    }
+
+    related.add(selectedNodeId);
+    edges.forEach((edge) => {
+      if (edge.source === selectedNodeId) {
+        related.add(edge.target);
+      }
+      if (edge.target === selectedNodeId) {
+        related.add(edge.source);
+      }
+    });
+
+    return related;
+  }, [selectedNodeId, edges]);
+
+  const highlightedEdgeKeys = useMemo(() => {
+    const keys = new Set<string>();
+    if (!selectedNodeId) {
+      return keys;
+    }
+
+    edges.forEach((edge) => {
+      if (edge.source === selectedNodeId || edge.target === selectedNodeId) {
+        keys.add(edgeKey(edge.source, edge.target));
+      }
+    });
+    return keys;
+  }, [selectedNodeId, edges]);
+
+  const bounds = useMemo(() => {
+    if (layout.nodes.length === 0) {
+      return { minX: -200, maxX: 200, minY: -200, maxY: 200 };
+    }
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    layout.nodes.forEach((node) => {
+      minX = Math.min(minX, node.x - node.radius);
+      maxX = Math.max(maxX, node.x + node.radius);
+      minY = Math.min(minY, node.y - node.radius);
+      maxY = Math.max(maxY, node.y + node.radius);
+    });
+
+    const padding = 120;
+    return {
+      minX: minX - padding,
+      maxX: maxX + padding,
+      minY: minY - padding,
+      maxY: maxY + padding
+    };
+  }, [layout.nodes]);
+
+  const findDropTarget = (worldPoint: { x: number; y: number }, excludeId: string): string | null => {
+    const radius = 36;
+    let closestId: string | null = null;
+    let closestDist = Infinity;
+
+    layoutNodesFinal.forEach((node) => {
+      if (node.id === excludeId) {
+        return;
+      }
+      const dx = node.x - worldPoint.x;
+      const dy = node.y - worldPoint.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist <= radius && dist < closestDist) {
+        closestId = node.id;
+        closestDist = dist;
+      }
+    });
+
+    return closestId;
+  };
+
+  const finalizeLasso = () => {
+    if (!lassoState.isActive) {
+      return;
+    }
+
+    const polygon = lassoState.points;
+    if (polygon.length > 2) {
+      const selected = new Set<string>();
+      layoutNodesFinal.forEach((node) => {
+        if (isPointInPolygon({ x: node.x, y: node.y }, polygon)) {
+          selected.add(node.id);
+        }
+      });
+      setLassoSelectedIds(selected);
+    }
+
+    setLassoState({ isActive: false, points: [] });
+  };
+
+  const finalizeNodeDrag = () => {
+    if (!nodeDragState.isDragging || !nodeDragState.nodeId) {
+      return;
+    }
+
+    if (dropTargetId) {
+      const choice = window.prompt("Connect as: relation or hierarchy?", "relation");
+      if (choice && (choice.toLowerCase() === "relation" || choice.toLowerCase() === "hierarchy")) {
+        onConnectNodes(nodeDragState.nodeId, dropTargetId, choice.toLowerCase() as "relation" | "hierarchy");
+      }
+    }
+
+    if (nodeDragState.dragged && nodeDragState.currentPos) {
+      setManualPositions((prev) => ({
+        ...prev,
+        [nodeDragState.nodeId as string]: nodeDragState.currentPos as { x: number; y: number }
+      }));
+    }
+
+    setDropTargetId(null);
+    setNodeDragState({
+      isDragging: false,
+      nodeId: null,
+      startWorld: { x: 0, y: 0 },
+      startNode: { x: 0, y: 0 },
+      startClient: { x: 0, y: 0 },
+      currentPos: null,
+      dragged: false
+    });
+  };
+
+  useEffect(() => {
+    if (!nodeDragState.isDragging) {
+      return;
+    }
+
+    const getWorldPointFromClient = (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const camera = renderRuntimeRef.current.camera;
+      const canvas = renderRuntimeRef.current.canvas;
+
+      if (!camera || !canvas) {
         return null;
       }
-      return {
-        ...edge,
-        sourcePos: { x: sourcePos.x, y: sourcePos.y },
-        targetPos: { x: targetPos.x, y: targetPos.y }
-      } as LayoutEdge;
-    }).filter((edge): edge is LayoutEdge => edge !== null);
-  }, [filteredEdges, nodeById]);
 
-  // Smooth transition animation when switching modes
-  useEffect(() => {
-    if (!svgRef.current || !selectedNodeId) {
-      return;
-    }
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return null;
+      }
 
-    const svg = svgRef.current;
-    const width = svg.clientWidth;
-    const height = svg.clientHeight;
-    const node = nodeById.get(selectedNodeId);
-    if (!node) {
-      return;
-    }
+      const normalizedX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const normalizedY = -(((clientY - rect.top) / rect.height) * 2 - 1);
 
-    const targetZoom = viewMode === "contextual" ? 1.4 : 1.0;
-    const targetPan = {
-      x: width / 2 - node.x * targetZoom,
-      y: height / 2 - node.y * targetZoom
+      const worldHalfWidth = rect.width / (2 * camera.zoom);
+      const worldHalfHeight = rect.height / (2 * camera.zoom);
+
+      const worldX = camera.position.x + normalizedX * worldHalfWidth;
+      const worldY = camera.position.y + normalizedY * worldHalfHeight;
+
+      return sanitizeWorldPoint(worldX, worldY);
     };
 
-    const startZoom = viewState.zoom;
-    const startPan = { ...viewState.pan };
-    const start = performance.now();
-    const duration = 400;
+    const handlePointerMove = (event: PointerEvent) => {
+      const current = getWorldPointFromClient(event.clientX, event.clientY);
+      if (!current || !nodeDragState.nodeId) {
+        return;
+      }
 
-    if (transitionAnimRef.current) {
-      cancelAnimationFrame(transitionAnimRef.current);
-    }
-
-    const step = (time: number) => {
-      const t = Math.min(1, (time - start) / duration);
-      const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-      
-      const nextZoom = startZoom + (targetZoom - startZoom) * eased;
-      const nextPan = {
-        x: startPan.x + (targetPan.x - startPan.x) * eased,
-        y: startPan.y + (targetPan.y - startPan.y) * eased
+      const deltaX = current.x - nodeDragState.startWorld.x;
+      const deltaY = current.y - nodeDragState.startWorld.y;
+      const nextPos = {
+        x: clamp(nodeDragState.startNode.x + deltaX, -MAX_WORLD_COORD, MAX_WORLD_COORD),
+        y: clamp(nodeDragState.startNode.y + deltaY, -MAX_WORLD_COORD, MAX_WORLD_COORD)
       };
 
-      setViewState((prev) => ({ ...prev, zoom: nextZoom, pan: nextPan }));
+      setNodeDragState((prev) => ({
+        ...prev,
+        currentPos: nextPos,
+        dragged: prev.dragged || Math.hypot(deltaX, deltaY) > 3
+      }));
 
-      if (t < 1) {
-        transitionAnimRef.current = requestAnimationFrame(step);
-      }
+      setDropTargetId(findDropTarget(nextPos, nodeDragState.nodeId));
     };
 
-    transitionAnimRef.current = requestAnimationFrame(step);
+    const handlePointerUp = () => {
+      finalizeNodeDrag();
+    };
+
+    const handleWindowBlur = () => {
+      finalizeNodeDrag();
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("blur", handleWindowBlur);
 
     return () => {
-      if (transitionAnimRef.current) {
-        cancelAnimationFrame(transitionAnimRef.current);
-      }
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("blur", handleWindowBlur);
     };
-  }, [viewMode, selectedNodeId, nodeById]);
+  }, [
+    nodeDragState.isDragging,
+    nodeDragState.nodeId,
+    nodeDragState.startWorld.x,
+    nodeDragState.startWorld.y,
+    nodeDragState.startNode.x,
+    nodeDragState.startNode.y,
+    layoutNodesFinal
+  ]);
 
-  useEffect(() => {
-    if (!selectedNodeId || !svgRef.current) {
+  const handleBackgroundPointerDown = (event: ThreeEvent<PointerEvent>) => {
+    if (event.button !== 0) {
       return;
     }
-    if (dragState.isDragging || nodeDragState.isDragging || lassoState.isActive) {
-      return;
-    }
-    if (viewMode === "contextual") {
-      return; // Contextual mode handles its own transitions
-    }
-    const node = nodeById.get(selectedNodeId);
-    if (!node) {
-      return;
-    }
-    const svg = svgRef.current;
-    const width = svg.clientWidth;
-    const height = svg.clientHeight;
-    const targetPan = {
-      x: width / 2 - node.x * viewState.zoom,
-      y: height / 2 - node.y * viewState.zoom
-    };
-    const startPan = { ...viewState.pan };
-    const start = performance.now();
-    const duration = 360;
 
-    if (focusAnimRef.current) {
-      cancelAnimationFrame(focusAnimRef.current);
+    if (event.shiftKey) {
+      event.stopPropagation();
+      const start = sanitizeWorldPoint(event.point.x, event.point.y);
+      setLassoState({
+        isActive: true,
+        points: [start]
+      });
+      setLassoSelectedIds(new Set());
     }
+  };
 
-    const step = (time: number) => {
-      const t = Math.min(1, (time - start) / duration);
-      const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-      const nextPan = {
-        x: startPan.x + (targetPan.x - startPan.x) * eased,
-        y: startPan.y + (targetPan.y - startPan.y) * eased
-      };
-      setViewState((prev) => ({ ...prev, pan: nextPan }));
-      if (t < 1) {
-        focusAnimRef.current = requestAnimationFrame(step);
-      }
-    };
+  const handleBackgroundPointerMove = (event: ThreeEvent<PointerEvent>) => {
+    if (lassoState.isActive) {
+      const next = sanitizeWorldPoint(event.point.x, event.point.y);
+      setLassoState((prev) => {
+        const last = prev.points[prev.points.length - 1];
+        if (last && Math.hypot(next.x - last.x, next.y - last.y) < 2) {
+          return prev;
+        }
+        return { ...prev, points: [...prev.points, next] };
+      });
+    }
+  };
 
-    focusAnimRef.current = requestAnimationFrame(step);
-    return () => {
-      if (focusAnimRef.current) {
-        cancelAnimationFrame(focusAnimRef.current);
-      }
-    };
-  }, [selectedNodeId, nodeById, viewState.zoom, dragState.isDragging, nodeDragState.isDragging, lassoState.isActive, viewMode]);
+  const handleBackgroundPointerUp = () => {
+    finalizeLasso();
+  };
+
+  const lassoPoints = useMemo<[number, number, number][]>(() => {
+    if (lassoState.points.length < 2) {
+      return [];
+    }
+    const points = lassoState.points.map((point) => [point.x, point.y, 2] as [number, number, number]);
+    const first = points[0];
+    return [...points, first];
+  }, [lassoState.points]);
 
   return (
     <div className="graph-scene-2d">
-      <svg
-        ref={svgRef}
-        className="graph-svg"
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        viewBox="0 0 800 600"
-        preserveAspectRatio="xMidYMid meet"
-        style={{ cursor: dragState.isDragging ? "grabbing" : "grab" }}
+      <Canvas
+        className="graph-three-canvas"
+        orthographic
+        camera={{ position: [0, 0, 300], zoom: 1, near: -2000, far: 2000 }}
+        dpr={[1, 2]}
+        gl={{ antialias: true, alpha: true }}
+        onContextMenu={(event) => event.preventDefault()}
+        onPointerMissed={() => {
+          if (!nodeDragState.isDragging) {
+            onSelectNode("");
+            setHoveredNodeId(null);
+          }
+        }}
       >
-        <defs>
-          <filter id="node-shadow">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="2" />
-          </filter>
-          <marker id="arrow-hierarchy" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 10 3, 0 6" fill="#8b5cf6" opacity="0.7" />
-          </marker>
-          <marker id="arrow-relation" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 10 3, 0 6" fill="#94a3b8" opacity="0.4" />
-          </marker>
-          <marker id="arrow-cross" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 10 3, 0 6" fill="#10b981" opacity="0.3" />
-          </marker>
-        </defs>
+        <color attach="background" args={["#000000"]} />
+        <RenderRuntimeBridge runtimeRef={renderRuntimeRef} />
 
-        <g transform={`translate(${viewState.pan.x}, ${viewState.pan.y}) scale(${viewState.zoom})`}>
-          {/* Background grid (subtle) */}
-          <g className="graph-grid" opacity="0.05">
-            {Array.from({ length: 20 }).map((_, i) => (
-              <line
-                key={`v-${i}`}
-                x1={bounds.minX + ((bounds.maxX - bounds.minX) / 20) * i}
-                y1={bounds.minY}
-                x2={bounds.minX + ((bounds.maxX - bounds.minX) / 20) * i}
-                y2={bounds.maxY}
-                stroke="currentColor"
-                strokeWidth="1"
+        <SceneFitter bounds={bounds} fitViewToken={fitViewToken} />
+
+        <MapControls
+          makeDefault
+          enabled={!nodeDragState.isDragging && !lassoState.isActive}
+          enableRotate={false}
+          enableDamping
+          dampingFactor={0.08}
+          minZoom={0.3}
+          maxZoom={4.2}
+          zoomSpeed={0.9}
+          panSpeed={0.9}
+          mouseButtons={{
+            LEFT: THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.PAN
+          }}
+        />
+
+        <mesh
+          position={[0, 0, -20]}
+          onPointerDown={handleBackgroundPointerDown}
+          onPointerMove={handleBackgroundPointerMove}
+          onPointerUp={handleBackgroundPointerUp}
+        >
+          <planeGeometry args={[12000, 12000]} />
+          <meshBasicMaterial transparent opacity={0} side={THREE.DoubleSide} />
+        </mesh>
+
+        {edgesFinal.map((edge, index) => {
+          const isHighlighted = highlightedEdgeKeys.has(edgeKey(edge.source, edge.target));
+          const isDimmed = selectedNodeId ? !isHighlighted : false;
+          const color = isHighlighted ? "#ffd166" : EDGE_COLORS[edge.edgeType] ?? "#94a3b8";
+          const baseOpacity = edge.edgeType === "hierarchy" ? 0.7 : edge.edgeType === "relation" ? 0.45 : 0.35;
+          const opacity = isHighlighted ? 0.95 : isDimmed ? Math.max(0.25, baseOpacity * 0.75) : baseOpacity;
+
+          return (
+            <group key={`${edge.source}-${edge.target}-${edge.edgeType}-${index}`}>
+              <Line
+                points={edge.points}
+                color={color}
+                transparent
+                opacity={opacity}
+                lineWidth={isHighlighted ? 2.4 : edge.edgeType === "hierarchy" ? 1.8 : 1.2}
+                dashed={edge.edgeType === "cross-workspace" && !isHighlighted}
+                dashSize={3}
+                gapSize={2}
               />
-            ))}
-            {Array.from({ length: 20 }).map((_, i) => (
-              <line
-                key={`h-${i}`}
-                x1={bounds.minX}
-                y1={bounds.minY + ((bounds.maxY - bounds.minY) / 20) * i}
-                x2={bounds.maxX}
-                y2={bounds.minY + ((bounds.maxY - bounds.minY) / 20) * i}
-                stroke="currentColor"
-                strokeWidth="1"
-              />
-            ))}
-          </g>
-
-          {/* Edges */}
-          {edgesFinal.map((edge, idx) => {
-            const lineColor =
-              edge.edgeType === "hierarchy"
-                ? "#8b5cf6"
-                : edge.edgeType === "relation"
-                  ? "#94a3b8"
-                  : "#10b981";
-
-            const lineOpacity =
-              edge.edgeType === "hierarchy" ? 0.7 : edge.edgeType === "relation" ? 0.4 : 0.3;
-
-            const lineWidth = edge.edgeType === "hierarchy" ? 2 : edge.edgeType === "relation" ? 1.5 : 1;
-
-            if (edge.isCurved) {
-              // Curved path for relations
-              const dx = edge.targetPos.x - edge.sourcePos.x;
-              const dy = edge.targetPos.y - edge.sourcePos.y;
-              const controlX = edge.sourcePos.x + dx / 2 + dy * 0.3;
-              const controlY = edge.sourcePos.y + dy / 2 - dx * 0.3;
-
-              return (
-                <path
-                  key={`edge-${idx}`}
-                  d={`M ${edge.sourcePos.x} ${edge.sourcePos.y} Q ${controlX} ${controlY} ${edge.targetPos.x} ${edge.targetPos.y}`}
-                  stroke={lineColor}
-                  strokeWidth={lineWidth}
-                  opacity={lineOpacity}
-                  fill="none"
-                  strokeLinecap="round"
-                  className="graph-edge"
+              {isHighlighted && (
+                <Line
+                  points={edge.points}
+                  color="#fff1b8"
+                  transparent
+                  opacity={0.35}
+                  lineWidth={4.6}
                 />
-              );
-            } else {
-              // Straight line for hierarchy
-              return (
-                <line
-                  key={`edge-${idx}`}
-                  x1={edge.sourcePos.x}
-                  y1={edge.sourcePos.y}
-                  x2={edge.targetPos.x}
-                  y2={edge.targetPos.y}
-                  stroke={lineColor}
-                  strokeWidth={lineWidth}
-                  opacity={lineOpacity}
-                  className="graph-edge"
-                />
-              );
-            }
-          })}
+              )}
+            </group>
+          );
+        })}
 
-          {/* Nodes */}
-          {layoutNodesFinal.map((node) => {
-            const isSelected = node.id === selectedNodeId;
-            const isLassoSelected = lassoSelectedIds.has(node.id);
-            const isDropTarget = dropTargetId === node.id;
-            const color = nodeColorMap.get(node.id) ?? "#6c757d";
+        {lassoPoints.length > 2 && (
+          <Line
+            points={lassoPoints}
+            color="#9d8b5e"
+            transparent
+            opacity={0.85}
+            lineWidth={1.4}
+            dashed
+            dashSize={4}
+            gapSize={3}
+          />
+        )}
 
-            // Calculate node scale and opacity based on view mode and zone
-            let nodeScale = 1.0;
-            let nodeOpacity = 0.9;
+        {layoutNodesFinal.map((node) => {
+          const isSelected = node.id === selectedNodeId;
+          const isRelated = selectedNodeId ? relatedNodeIds.has(node.id) : true;
+          const isDimmed = selectedNodeId ? !isRelated : false;
+          const isHovered = hoveredNodeId === node.id;
+          const isLassoSelected = lassoSelectedIds.has(node.id);
+          const isDropTarget = dropTargetId === node.id;
+          const entity = nodeByEntityId.get(node.id);
+          const color = nodeColorMap.get(node.id) ?? "#6c757d";
+          const radius = isSelected ? node.radius * 1.2 : node.radius;
+          const nodeOpacity = isSelected ? 1 : isDimmed ? 0.65 : 0.9;
 
-            if (viewMode === "contextual") {
-              const parentId = nodeByEntityId.get(selectedNodeId)?.parentId;
-              const childIds = childrenById.get(selectedNodeId) ?? [];
-
-              if (isSelected) {
-                // ZONE 1: Center - Active node (larger)
-                nodeScale = 1.6;
-                nodeOpacity = 1.0;
-              } else if (node.id === parentId) {
-                // ZONE 2: Above - Parent (reduced)
-                nodeScale = 0.85;
-                nodeOpacity = 0.75;
-              } else if (childIds.includes(node.id)) {
-                // ZONE 3: Below - Children (standard)
-                nodeScale = 1.0;
-                nodeOpacity = 0.85;
-              } else {
-                // ZONE 4/5: Relations/Cross-workspace (smaller, subtle)
-                nodeScale = 0.7;
-                nodeOpacity = 0.65;
-              }
-            }
-
-            return (
-              <g
-                key={`node-${node.id}`}
-                className={`graph-node ${isSelected ? "selected" : ""} ${isLassoSelected ? "lasso-selected" : ""} ${isDropTarget ? "drop-target" : ""}`}
-              >
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r={node.radius * nodeScale}
-                  fill={color}
-                  opacity={nodeOpacity}
-                  filter="url(#node-shadow)"
-                  className="node-circle"
-                  style={{ transition: "all 0.4s ease" }}
-                  onMouseDown={(event) => {
+          return (
+            <group key={node.id} position={[node.x, node.y, NODE_Z]}>
+              <mesh
+                onPointerDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  event.stopPropagation();
+                  const captureTarget = event.target as unknown as {
+                    setPointerCapture?: (pointerId: number) => void;
+                  };
+                  captureTarget.setPointerCapture?.(event.pointerId);
+                  setNodeDragState({
+                    isDragging: true,
+                    nodeId: node.id,
+                    startWorld: { x: event.point.x, y: event.point.y },
+                    startNode: { x: node.x, y: node.y },
+                    startClient: { x: event.nativeEvent.clientX, y: event.nativeEvent.clientY },
+                    currentPos: { x: node.x, y: node.y },
+                    dragged: false
+                  });
+                }}
+                onPointerMove={(event) => {
+                  if (nodeDragState.isDragging && nodeDragState.nodeId === node.id) {
                     event.stopPropagation();
-                    const start = getWorldPoint(event.clientX, event.clientY);
-                    setNodeDragState({
-                      isDragging: true,
-                      nodeId: node.id,
-                      startWorld: start,
-                      startNode: { x: node.x, y: node.y },
-                      currentPos: { x: node.x, y: node.y },
-                      dragged: false
-                    });
-                  }}
-                  onClick={() => {
-                    if (nodeDragState.dragged) {
-                      return;
-                    }
-                    // In contextual mode, clicking parent/children navigates directly
-                    if (viewMode === "contextual" && node.id !== selectedNodeId) {
-                      const parentId = nodeByEntityId.get(selectedNodeId)?.parentId;
-                      const childIds = childrenById.get(selectedNodeId) ?? [];
-                      
-                      if (node.id === parentId || childIds.includes(node.id)) {
-                        handleNodeDoubleClick(node.id); // Navigate smoothly
-                        return;
-                      }
-                    }
-                    handleNodeClick(node.id);
-                  }}
-                  onDoubleClick={() => {
-                    handleNodeDoubleClick(node.id);
-                  }}
-                />
+                  }
+                }}
+                onPointerUp={(event) => {
+                  event.stopPropagation();
+                  const captureTarget = event.target as unknown as {
+                    releasePointerCapture?: (pointerId: number) => void;
+                  };
+                  captureTarget.releasePointerCapture?.(event.pointerId);
+                  const wasClick = nodeDragState.nodeId === node.id && !nodeDragState.dragged;
+                  if (wasClick) {
+                    onSelectNode(node.id);
+                  }
+                  finalizeNodeDrag();
+                }}
+                onPointerOver={(event) => {
+                  event.stopPropagation();
+                  setHoveredNodeId(node.id);
+                }}
+                onPointerOut={(event) => {
+                  event.stopPropagation();
+                  setHoveredNodeId((prev) => (prev === node.id ? null : prev));
+                }}
+              >
+                <circleGeometry args={[radius, 40]} />
+                <meshBasicMaterial color={color} transparent opacity={nodeOpacity} />
+              </mesh>
 
-                {isSelected && (
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={(node.radius + 6) * nodeScale}
-                    fill="none"
-                    stroke="#9d8b5e"
-                    strokeWidth="2"
-                    opacity="0.6"
-                    className="node-glow"
-                    style={{ transition: "all 0.4s ease" }}
-                  />
-                )}
+              {isSelected && (
+                <mesh>
+                  <ringGeometry args={[radius + 4, radius + 7, 48]} />
+                  <meshBasicMaterial color="#9d8b5e" transparent opacity={0.55} side={THREE.DoubleSide} />
+                </mesh>
+              )}
 
-                {/* Node Tooltip (title above selected node) */}
-                {isSelected && selectedNodeTooltip && (
-                  <g className="node-tooltip">
-                    <rect
-                      x={node.x - 80}
-                      y={node.y - 60}
-                      width="160"
-                      height="28"
-                      rx="6"
-                      fill="rgba(26, 31, 24, 0.95)"
-                      stroke="rgba(157, 139, 94, 0.5)"
-                      strokeWidth="1"
-                    />
-                    <text
-                      x={node.x}
-                      y={node.y - 40}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      className="tooltip-text"
-                      fill="#f5f3ef"
-                      fontSize="12"
-                      fontWeight="500"
-                    >
-                      {selectedNodeTooltip.length > 20
-                        ? `${selectedNodeTooltip.substring(0, 20)}...`
-                        : selectedNodeTooltip}
-                    </text>
-                    <text
-                      x={node.x}
-                      y={node.y - 22}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      className="tooltip-hint"
-                      fill="#94968f"
-                      fontSize="10"
-                    >
-                      Click again for details
-                    </text>
-                  </g>
-                )}
-              </g>
-            );
-          })}
+              {isLassoSelected && !isSelected && (
+                <mesh>
+                  <ringGeometry args={[radius + 3, radius + 5, 40]} />
+                  <meshBasicMaterial color="#bfa56a" transparent opacity={0.45} side={THREE.DoubleSide} />
+                </mesh>
+              )}
 
-          {lassoState.isActive && lassoState.points.length > 2 && (
-            <path
-              d={buildLassoPath(lassoState.points)}
-              className="lasso-path"
-            />
-          )}
-        </g>
-      </svg>
+              {isDropTarget && (
+                <mesh>
+                  <ringGeometry args={[radius + 6, radius + 9, 40]} />
+                  <meshBasicMaterial color="#10b981" transparent opacity={0.55} side={THREE.DoubleSide} />
+                </mesh>
+              )}
 
-      {/* Controls */}
+              {(isHovered || (isSelected && selectedNodeTooltip)) && (
+                <Html position={[0, radius + 26, 0]} center>
+                  <div className="three-tooltip">
+                    <div className="three-tooltip-title">
+                      {(entity?.title ?? selectedNodeTooltip ?? "Node").length > 20
+                        ? `${(entity?.title ?? selectedNodeTooltip ?? "Node").substring(0, 20)}...`
+                        : entity?.title ?? selectedNodeTooltip ?? "Node"}
+                    </div>
+                    <div className="three-tooltip-hint">
+                      {entity ? `${entity.type} · ${entity.workspaceId}` : "Click again for details"}
+                    </div>
+                  </div>
+                </Html>
+              )}
+            </group>
+          );
+        })}
+      </Canvas>
+
       <div className="graph-controls">
         <div className="control-group">
           <label className="control-label">Depth</label>
@@ -908,7 +692,7 @@ export default function GraphScene2D({
             min="1"
             max="5"
             value={depthLimit}
-            onChange={(e) => setDepthLimit(Number(e.target.value))}
+            onChange={(event) => setDepthLimit(Number(event.target.value))}
             className="control-slider"
           />
           <span className="control-value">{depthLimit}</span>
@@ -923,138 +707,116 @@ export default function GraphScene2D({
         </button>
 
         <button
-          className={`control-button ${viewMode === "contextual" ? "active" : ""}`}
-          onClick={() => setViewMode(viewMode === "contextual" ? "exploration" : "contextual")}
-          title="Toggle contextual mode"
+          className="control-button"
+          onClick={() => setFitViewToken((prev) => prev + 1)}
+          title="Fit graph to viewport"
         >
-          {viewMode === "contextual" ? "Exit Context" : "Enter Context"}
+          Center View
         </button>
       </div>
 
-      {/* Breadcrumb Navigation (only in contextual mode) */}
-      {viewMode === "contextual" && selectedNodeId && (
-        <div className="graph-breadcrumb">
-          {(() => {
-            const path: Array<{ id: string; title: string }> = [];
-            let current = nodeByEntityId.get(selectedNodeId);
-            
-            // Build path from current to root
-            while (current) {
-              path.unshift({ id: current.id, title: current.title });
-              current = current.parentId ? nodeByEntityId.get(current.parentId) : undefined;
-            }
-
-            return (
-              <>
-                <span className="breadcrumb-label">Path:</span>
-                {path.map((item, index) => (
-                  <span key={item.id} className="breadcrumb-path">
-                    {index > 0 && <span className="breadcrumb-separator">›</span>}
-                    <button
-                      className={`breadcrumb-item ${item.id === selectedNodeId ? "active" : ""}`}
-                      onClick={() => {
-                        if (item.id !== selectedNodeId) {
-                          handleNodeDoubleClick(item.id);
-                        }
-                      }}
-                      title={item.title}
-                    >
-                      {item.title.length > 20 ? `${item.title.substring(0, 20)}...` : item.title}
-                    </button>
-                  </span>
-                ))}
-              </>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* Contextual Quick Actions (only in contextual mode) */}
-      {viewMode === "contextual" && selectedNodeId && (
-        <div className="contextual-actions">
-          <div className="action-hint">Quick Actions</div>
-          <button 
-            className="action-button action-add-child"
-            onClick={() => {
-              // This would trigger creation of a child node
-              console.log("Add child to", selectedNodeId);
-            }}
-            title="Add child node"
-          >
-            + Child
-          </button>
-          <button 
-            className="action-button action-add-relation"
-            onClick={() => {
-              // This would trigger creation of a related node
-              console.log("Add relation to", selectedNodeId);
-            }}
-            title="Add related node"
-          >
-            ↔ Relate
-          </button>
-          <button 
-            className="action-button action-link-workspace"
-            onClick={() => {
-              // This would trigger cross-workspace linking
-              console.log("Link workspace for", selectedNodeId);
-            }}
-            title="Link to another workspace"
-          >
-            ⚡ Link WS
-          </button>
-        </div>
-      )}
-
-      {/* Help / Controls Info */}
       <div className="graph-help">
         <div className="help-item">
-          <kbd>Click + Drag</kbd> Pan
+          <kbd>Left Click</kbd> Select Node
         </div>
         <div className="help-item">
-          <kbd>Shift + Drag</kbd> Select
+          <kbd>Left Drag Node</kbd> Move / Connect
         </div>
         <div className="help-item">
-          <kbd>Double Click</kbd> Context
+          <kbd>Right Drag</kbd> Pan Space
         </div>
         <div className="help-item">
-          <kbd>↑↓←→</kbd> Move
+          <kbd>Shift + Drag</kbd> Lasso
         </div>
         <div className="help-item">
-          <kbd>+/-</kbd> Zoom
-        </div>
-        <div className="help-item">
-          <kbd>R</kbd> Reset
-        </div>
-        <div className="help-item">
-          <kbd>Scroll</kbd> Zoom
-        </div>
-        <div className="help-item">
-          <kbd>Drag Node</kbd> Connect
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div className="graph-legend">
-        <div className="legend-item">
-          <svg width="20" height="3" className="legend-line">
-            <line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#8b5cf6" strokeWidth="2" opacity="0.7" />
-          </svg>
-          <span>Hierarchy</span>
-        </div>
-        <div className="legend-item">
-          <svg width="20" height="3" className="legend-line">
-            <path d="M 0 1.5 Q 10 -5 20 1.5" stroke="#94a3b8" strokeWidth="1.5" opacity="0.4" fill="none" />
-          </svg>
-          <span>Relations</span>
-        </div>
-        <div className="legend-item">
-          <svg width="20" height="3" className="legend-line">
-            <line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#10b981" strokeWidth="1" opacity="0.3" strokeDasharray="3,2" />
-          </svg>
-          <span>Cross-WS</span>
+          <kbd>Center View</kbd> Fit Graph
         </div>
       </div>
     </div>
   );
+}
+
+function SceneFitter({
+  bounds,
+  fitViewToken
+}: {
+  bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  fitViewToken: number;
+}) {
+  const { camera, size } = useThree();
+  const cameraRef = camera as THREE.OrthographicCamera;
+
+  useEffect(() => {
+    const width = Math.max(1, bounds.maxX - bounds.minX);
+    const height = Math.max(1, bounds.maxY - bounds.minY);
+
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+
+    const targetWidth = width;
+    const targetHeight = height;
+
+    const zoomX = size.width / targetWidth;
+    const zoomY = size.height / targetHeight;
+    const zoom = Math.max(0.3, Math.min(4.2, Math.min(zoomX, zoomY) * 0.92));
+
+    cameraRef.position.set(centerX, centerY, 300);
+    cameraRef.zoom = zoom;
+    cameraRef.updateProjectionMatrix();
+  }, [bounds, cameraRef, fitViewToken, size.height, size.width]);
+
+  return null;
+}
+
+function RenderRuntimeBridge({
+  runtimeRef
+}: {
+  runtimeRef: MutableRefObject<{
+    camera: THREE.OrthographicCamera | null;
+    canvas: HTMLCanvasElement | null;
+  }>;
+}) {
+  const { camera, gl } = useThree();
+
+  useEffect(() => {
+    runtimeRef.current.camera = camera as THREE.OrthographicCamera;
+    runtimeRef.current.canvas = gl.domElement;
+
+    return () => {
+      runtimeRef.current.camera = null;
+      runtimeRef.current.canvas = null;
+    };
+  }, [camera, gl, runtimeRef]);
+
+  return null;
+}
+
+function isPointInPolygon(point: { x: number; y: number }, polygon: Array<{ x: number; y: number }>) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+
+    const intersect = yi > point.y !== yj > point.y && point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
+    if (intersect) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function sanitizeWorldPoint(x: number, y: number): { x: number; y: number } {
+  const safeX = Number.isFinite(x) ? clamp(x, -MAX_WORLD_COORD, MAX_WORLD_COORD) : 0;
+  const safeY = Number.isFinite(y) ? clamp(y, -MAX_WORLD_COORD, MAX_WORLD_COORD) : 0;
+  return { x: safeX, y: safeY };
+}
+
+function edgeKey(source: string, target: string): string {
+  return [source, target].sort().join("::");
 }

@@ -3,9 +3,15 @@
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.85);
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: var(--node-bg);
+  border-radius: var(--border-radius-full);
+  border: 1px solid var(--border-color);
+  transition: all var(--duration-quick) var(--easing-smooth);
+}
+
+.command-bar:focus-within {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(157, 139, 94, 0.15);
 }
 
 .command-bar input {
@@ -15,16 +21,26 @@
   min-width: 220px;
   font-family: "IBM Plex Mono", "Space Grotesk", monospace;
   font-size: 12px;
+  color: var(--text-primary);
+}
+
+.command-bar input::placeholder {
+  color: var(--text-muted);
 }
 
 .command-bar button {
   border: none;
-  background: #0b0d11;
-  color: #fff;
+  background: var(--accent-primary);
+  color: var(--text-primary);
   padding: 8px 12px;
-  border-radius: 999px;
+  border-radius: var(--border-radius-full);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   cursor: pointer;
+  transition: all var(--duration-quick) var(--easing-smooth);
+}
+
+.command-bar button:hover {
+  box-shadow: var(--glow-soft);
 }

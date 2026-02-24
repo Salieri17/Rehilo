@@ -11,8 +11,8 @@
   gap: 6px;
   font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  color: #4a5568;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
 }
 
 .filter-field span {
@@ -22,15 +22,23 @@
 .filter-field select,
 .filter-field input {
   font-family: "IBM Plex Mono", "Space Grotesk", monospace;
-  border-radius: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-color);
   padding: 8px 10px;
-  background: #fff;
-  color: #0b0d11;
+  background: var(--node-bg);
+  color: var(--text-primary);
+  transition: all var(--duration-quick) var(--easing-smooth);
 }
 
 .filter-field input::placeholder {
-  color: rgba(15, 23, 42, 0.4);
+  color: var(--text-muted);
+}
+
+.filter-field select:focus,
+.filter-field input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(157, 139, 94, 0.15);
 }
 
 @media (max-width: 720px) {

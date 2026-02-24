@@ -2,25 +2,31 @@
   display: inline-flex;
   gap: 6px;
   padding: 6px;
-  background: rgba(255, 255, 255, 0.72);
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: var(--node-bg);
+  border-radius: var(--border-radius-full);
+  border: 1px solid var(--border-color);
 }
 
 .view-switcher button {
   border: none;
   background: transparent;
   padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: var(--border-radius-full);
   font-size: 12px;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
   font-weight: 600;
-  color: #4a5568;
+  color: var(--text-tertiary);
   cursor: pointer;
+  transition: all var(--duration-quick) var(--easing-smooth);
+}
+
+.view-switcher button:hover {
+  color: var(--text-secondary);
 }
 
 .view-switcher button.active {
-  background: #0b0d11;
-  color: #fff;
+  background: var(--accent-primary);
+  color: var(--text-primary);
+  box-shadow: var(--glow-soft);
 }

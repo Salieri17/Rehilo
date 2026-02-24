@@ -21,6 +21,39 @@
   touch-action: none;
 }
 
+.graph-three-canvas {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.three-tooltip {
+  min-width: 160px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(157, 139, 94, 0.45);
+  background: rgba(26, 31, 24, 0.95);
+  color: #f5f3ef;
+  text-align: center;
+  box-shadow: var(--shadow-sm, 0 4px 10px rgba(0, 0, 0, 0.25));
+  pointer-events: none;
+}
+
+.three-tooltip-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.three-tooltip-hint {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary, #94968f);
+}
+
 /* Grid (subtle background) */
 .graph-grid {
   color: var(--text-primary, #f5f3ef);

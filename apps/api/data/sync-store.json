@@ -1,0 +1,367 @@
+{
+  "workspaces": {
+    "ws-personal": {
+      "id": "ws-personal",
+      "nodes": {
+        "n1": {
+          "id": "n1",
+          "workspaceId": "ws-personal",
+          "type": "project",
+          "title": "Home studio refresh",
+          "content": "Upgrade acoustics and lighting.",
+          "tags": [
+            "home",
+            "audio"
+          ],
+          "relationIds": [
+            "n2",
+            "n3"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n2"
+            },
+            {
+              "targetNodeId": "n3"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-02-02T09:10:00.000Z",
+          "updatedAt": "2026-02-10T09:10:00.000Z"
+        },
+        "n2": {
+          "id": "n2",
+          "workspaceId": "ws-personal",
+          "type": "todo",
+          "title": "Order panels",
+          "content": "- [ ] Compare suppliers\n- [ ] Check lead times",
+          "tags": [
+            "home",
+            "todo"
+          ],
+          "relationIds": [
+            "n1"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": "n1",
+          "relations": [
+            {
+              "targetNodeId": "n1"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-02-03T11:30:00.000Z",
+          "updatedAt": "2026-02-05T11:30:00.000Z",
+          "status": "pending"
+        },
+        "n3": {
+          "id": "n3",
+          "workspaceId": "ws-personal",
+          "type": "note",
+          "title": "Acoustic reference",
+          "content": "Gather measurements from last session.",
+          "tags": [
+            "audio",
+            "research"
+          ],
+          "relationIds": [
+            "n1"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n1"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-02-04T15:10:00.000Z",
+          "updatedAt": "2026-02-06T15:10:00.000Z"
+        },
+        "n4": {
+          "id": "n4",
+          "workspaceId": "ws-personal",
+          "type": "idea",
+          "title": "Modular wall",
+          "content": "Use hex panels with hidden lighting.",
+          "tags": [
+            "home",
+            "idea"
+          ],
+          "relationIds": [
+            "n1"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n1"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-02-08T12:00:00.000Z",
+          "updatedAt": "2026-02-08T12:00:00.000Z"
+        },
+        "n5": {
+          "id": "n5",
+          "workspaceId": "ws-personal",
+          "type": "link",
+          "title": "https://acoustics.example.com",
+          "content": "Supplier reference.",
+          "tags": [
+            "audio"
+          ],
+          "relationIds": [
+            "n2"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n2"
+            }
+          ],
+          "metadata": {
+            "url": "https://acoustics.example.com"
+          },
+          "createdAt": "2026-02-05T09:00:00.000Z",
+          "updatedAt": "2026-02-05T09:00:00.000Z"
+        },
+        "31ec1794-f1ee-4216-acbf-cd7ed5acd33d": {
+          "id": "31ec1794-f1ee-4216-acbf-cd7ed5acd33d",
+          "workspaceId": "ws-personal",
+          "type": "todo",
+          "title": "T",
+          "content": "",
+          "tags": [],
+          "relationIds": [
+            "9ad466d6-f612-45df-9963-1ddc8ab438fd"
+          ],
+          "crossWorkspaceRefs": [],
+          "relations": [
+            {
+              "targetNodeId": "9ad466d6-f612-45df-9963-1ddc8ab438fd"
+            }
+          ],
+          "parentId": "9e7238ed-08f7-456b-9673-76a46400a18b",
+          "metadata": {
+            "hierarchyPath": [
+              "TTT",
+              "T"
+            ],
+            "hierarchyMode": "path-command",
+            "hierarchyDepth": 1,
+            "nodeMentions": [],
+            "urls": [],
+            "detectedDates": []
+          },
+          "createdAt": "2026-02-20T17:50:13.000Z",
+          "updatedAt": "2026-02-20T19:10:35.712Z",
+          "status": "pending"
+        },
+        "9e7238ed-08f7-456b-9673-76a46400a18b": {
+          "id": "9e7238ed-08f7-456b-9673-76a46400a18b",
+          "workspaceId": "ws-personal",
+          "type": "project",
+          "title": "TTT",
+          "content": "",
+          "tags": [],
+          "relationIds": [],
+          "crossWorkspaceRefs": [],
+          "relations": [],
+          "parentId": null,
+          "metadata": {
+            "hierarchyPath": [
+              "TTT"
+            ],
+            "autoGeneratedParent": true,
+            "hierarchyMode": "path-command",
+            "linkState": "unlinked"
+          },
+          "createdAt": "2026-02-20T17:50:12.999Z",
+          "updatedAt": "2026-02-20T17:50:12.999Z"
+        },
+        "9ad466d6-f612-45df-9963-1ddc8ab438fd": {
+          "id": "9ad466d6-f612-45df-9963-1ddc8ab438fd",
+          "workspaceId": "ws-personal",
+          "type": "note",
+          "title": "Test de un note",
+          "content": "Test de un note",
+          "tags": [],
+          "relationIds": [
+            "31ec1794-f1ee-4216-acbf-cd7ed5acd33d"
+          ],
+          "crossWorkspaceRefs": [],
+          "relations": [
+            {
+              "targetNodeId": "31ec1794-f1ee-4216-acbf-cd7ed5acd33d"
+            }
+          ],
+          "parentId": null,
+          "metadata": {
+            "linkState": "unlinked"
+          },
+          "createdAt": "2026-02-20T17:50:55.878Z",
+          "updatedAt": "2026-02-20T19:10:35.708Z"
+        },
+        "4bd92f46-8397-4cb3-beb6-34fb8e4cf02a": {
+          "id": "4bd92f46-8397-4cb3-beb6-34fb8e4cf02a",
+          "workspaceId": "ws-personal",
+          "type": "link",
+          "title": "https://github.com/Salieri17/Rehilo",
+          "content": "",
+          "tags": [],
+          "relationIds": [],
+          "crossWorkspaceRefs": [],
+          "relations": [],
+          "parentId": null,
+          "metadata": {
+            "url": "https://github.com/Salieri17/Rehilo",
+            "linkState": "unlinked"
+          },
+          "createdAt": "2026-02-20T18:51:55.607Z",
+          "updatedAt": "2026-02-20T18:51:55.607Z"
+        }
+      },
+      "updatedAt": "2026-02-24T23:16:45.518Z"
+    },
+    "ws-work": {
+      "id": "ws-work",
+      "nodes": {
+        "n10": {
+          "id": "n10",
+          "workspaceId": "ws-work",
+          "type": "idea",
+          "title": "Auto narrative",
+          "content": "Generate insights from trends.",
+          "tags": [
+            "analytics",
+            "idea"
+          ],
+          "relationIds": [
+            "n6"
+          ],
+          "crossWorkspaceRefs": [
+            "n1"
+          ],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n6"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-02-03T12:00:00.000Z",
+          "updatedAt": "2026-02-03T12:00:00.000Z"
+        },
+        "n6": {
+          "id": "n6",
+          "workspaceId": "ws-work",
+          "type": "project",
+          "title": "Reporting system",
+          "content": "Quarterly metrics for leadership.",
+          "tags": [
+            "analytics",
+            "q1"
+          ],
+          "relationIds": [
+            "n7",
+            "n8"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n7"
+            },
+            {
+              "targetNodeId": "n8"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-01-22T10:00:00.000Z",
+          "updatedAt": "2026-02-12T10:00:00.000Z"
+        },
+        "n7": {
+          "id": "n7",
+          "workspaceId": "ws-work",
+          "type": "todo",
+          "title": "Model KPIs",
+          "content": "Define metrics for pipeline health.",
+          "tags": [
+            "analytics",
+            "todo"
+          ],
+          "relationIds": [
+            "n6"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": "n6",
+          "relations": [
+            {
+              "targetNodeId": "n6"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-01-25T08:00:00.000Z",
+          "updatedAt": "2026-02-11T08:00:00.000Z",
+          "status": "pending"
+        },
+        "n8": {
+          "id": "n8",
+          "workspaceId": "ws-work",
+          "type": "note",
+          "title": "Stakeholder map",
+          "content": "Map teams to required dashboards.",
+          "tags": [
+            "analytics",
+            "research"
+          ],
+          "relationIds": [
+            "n6"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n6"
+            }
+          ],
+          "metadata": {},
+          "createdAt": "2026-01-29T08:20:00.000Z",
+          "updatedAt": "2026-02-09T08:20:00.000Z"
+        },
+        "n9": {
+          "id": "n9",
+          "workspaceId": "ws-work",
+          "type": "event",
+          "title": "Metrics review",
+          "content": "Review metrics before launch.",
+          "tags": [
+            "q1",
+            "meeting"
+          ],
+          "relationIds": [
+            "n6"
+          ],
+          "crossWorkspaceRefs": [],
+          "parentId": null,
+          "relations": [
+            {
+              "targetNodeId": "n6"
+            }
+          ],
+          "metadata": {
+            "startAt": "2026-02-25"
+          },
+          "createdAt": "2026-02-01T14:15:00.000Z",
+          "updatedAt": "2026-02-01T14:15:00.000Z"
+        }
+      },
+      "updatedAt": "2026-02-24T23:16:45.521Z"
+    }
+  },
+  "updatedAt": "2026-02-24T23:16:45.521Z"
+}
