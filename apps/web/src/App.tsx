@@ -1,605 +1,786 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CreateNodeInput, NodeEntity } from "@rehilo/domain";
-import { createNode, getNodeRelationIds, parseHybridInput } from "@rehilo/domain";
-import FilterBar from "./components/FilterBar";
-import CaptureDialog from "./components/CaptureDialog";
-import ErrorBoundary from "./components/ErrorBoundary";
-import GraphScene2D from "./components/GraphScene2D";
-import CaptureHistoryPanel, { type CaptureHistoryItem } from "./components/CaptureHistoryPanel";
-import ToastStack, { type ToastItem, type ToastTone } from "./components/ToastStack";
-import DashboardView from "./components/dashboard/DashboardView";
-import { demoNodes } from "./data/demoGraph";
 import {
-  buildGraphEdges,
-  filterNodes,
-  listUnlinkedNodes,
-  parseTagQuery,
-  suggestLinksForUnlinked
-} from "./lib/graph-utils";
+  connectNodes,
+  createNode,
+  deleteNode,
+  listConnections,
+  listNodes,
+  type GraphState,
+  type NodeType,
+  updateNode
+} from "./core/node-engine";
+import { loadGraphState, saveGraphState } from "./core/node-store";
+import WorkspaceCanvas from "./ui/WorkspaceCanvas";
 import {
-  type WorkspaceLayoutState,
-  loadWorkspaceLayout,
-  saveWorkspaceLayout
-} from "./lib/layout-store";
-import { createOfflineNodeRepository } from "./lib/offline-repository";
-import { startBackgroundSync } from "./lib/sync-service";
-import { subscribeCaptureEvents } from "./lib/capture-events";
-import { deriveTitleFromText, isProbablyUrl } from "./lib/capture-utils";
+  addWidget,
+  bringWidgetToFront,
+  bringWorkspaceNodeToFront,
+  createTimerWidget,
+  createWorkspace,
+  createWorkspaceNode,
+  getNextZIndex,
+  removeNodeFromWorkspaces,
+  removeWidget,
+  setWorkspaceNodeMinimized,
+  tickTimerWidgets,
+  updateWidgetPosition,
+  updateWidgetState,
+  updateWorkspaceNodePosition,
+  WORLD_HEIGHT,
+  WORLD_WIDTH,
+  type Workspace,
+  type Widget
+} from "./workspace/workspace-engine";
+import {
+  loadActiveWorkspaceId,
+  loadWorkspaces,
+  saveActiveWorkspaceId,
+  saveWorkspaces
+} from "./workspace/workspace-store";
 
-const EMPTY_SELECTION = "";
-type ViewMode = "dashboard" | "graph";
-type SelectionState = "none" | "tooltip" | "detail";
+type CanvasCreateKind = "note" | "todo" | "journal" | "timer";
+
+interface CanvasCreatePayload {
+  kind: CanvasCreateKind;
+  x: number;
+  y: number;
+  title?: string;
+  content?: string;
+  checklistItems?: string[];
+}
+
+interface CommandPlan {
+  ok: boolean;
+  error?: string;
+  preview?: string;
+  workspaceNumber?: number;
+  kind?: CanvasCreateKind;
+  title?: string;
+  content?: string;
+  checklistItems?: string[];
+}
+
+interface WorkspaceLogEntry {
+  id: string;
+  message: string;
+  timestamp: string;
+}
+
+type WorkspaceLogMap = Record<string, WorkspaceLogEntry[]>;
+
+const WORKSPACE_LOG_STORAGE_KEY = "rehilo.workspace-logs.v1";
 
 export default function App() {
-  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
-  const [dashboardCollapsed, setDashboardCollapsed] = useState(false);
-  const [selectionState, setSelectionState] = useState<SelectionState>("none");
-  const [nodes, setNodes] = useState<NodeEntity[]>([]);
-  const [workspaceId, setWorkspaceId] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [tagQuery, setTagQuery] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [showUnlinkedOnly, setShowUnlinkedOnly] = useState(false);
-  const [selectedNodeId, setSelectedNodeId] = useState(EMPTY_SELECTION);
-  const [layoutState, setLayoutState] = useState<WorkspaceLayoutState>(() =>
-    loadWorkspaceLayout("all")
-  );
-  const [captureOpen, setCaptureOpen] = useState(false);
-  const [captureValue, setCaptureValue] = useState("");
-  const [captureStatus, setCaptureStatus] = useState<string | null>(null);
-  const [captureHistory, setCaptureHistory] = useState<CaptureHistoryItem[]>([]);
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const repo = useMemo(() => createOfflineNodeRepository(), []);
+  const [graphState, setGraphState] = useState<GraphState>(() => loadGraphState());
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => loadWorkspaces());
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => loadActiveWorkspaceId());
 
-  const workspaces = useMemo(() => {
-    const unique = Array.from(new Set(nodes.map((node) => node.workspaceId)));
-    return unique;
-  }, [nodes]);
+  const [newNodeTitle, setNewNodeTitle] = useState("");
+  const [newNodeType, setNewNodeType] = useState<NodeType>("note");
 
-  const types = useMemo(() => {
-    const unique = Array.from(new Set(nodes.map((node) => node.type)));
-    return unique;
-  }, [nodes]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [pendingConnectionSourceId, setPendingConnectionSourceId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState("Ready");
+  const [workspaceLogs, setWorkspaceLogs] = useState<WorkspaceLogMap>(() => loadWorkspaceLogs());
+  const [isWorkspaceConfigOpen, setIsWorkspaceConfigOpen] = useState(false);
+  const [isWorkspaceLogOpen, setIsWorkspaceLogOpen] = useState(false);
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState("");
 
-  const tags = useMemo(() => {
-    const unique = new Set<string>();
-    nodes.forEach((node) => node.tags.forEach((tag) => unique.add(tag)));
-    return Array.from(unique);
-  }, [nodes]);
+  const [lastCreatedNodeId, setLastCreatedNodeId] = useState<string | null>(null);
+  const [lastCreatedWidgetId, setLastCreatedWidgetId] = useState<string | null>(null);
 
-  const filters = useMemo(
-    () => ({
-      workspaceId,
-      type: typeFilter,
-      tags: parseTagQuery(tagQuery),
-      dateFrom,
-      dateTo
-    }),
-    [workspaceId, typeFilter, tagQuery, dateFrom, dateTo]
-  );
+  const nodes = useMemo(() => listNodes(graphState), [graphState]);
+  const connections = useMemo(() => listConnections(graphState), [graphState]);
 
-  const filteredNodes = useMemo<NodeEntity[]>(() => filterNodes(nodes, filters), [filters, nodes]);
-  const workspaceScopedNodes = useMemo(
-    () => (workspaceId === "all" ? nodes : nodes.filter((node) => node.workspaceId === workspaceId)),
-    [nodes, workspaceId]
-  );
-  const unlinkedNodes = useMemo(() => listUnlinkedNodes(workspaceScopedNodes), [workspaceScopedNodes]);
-  const unlinkedNodeIds = useMemo(() => new Set(unlinkedNodes.map((node) => node.id)), [unlinkedNodes]);
-  const visibleNodes = useMemo(
-    () => (showUnlinkedOnly ? filteredNodes.filter((node) => unlinkedNodeIds.has(node.id)) : filteredNodes),
-    [filteredNodes, showUnlinkedOnly, unlinkedNodeIds]
-  );
-  const edges = useMemo(() => buildGraphEdges(visibleNodes), [visibleNodes]);
+  const activeWorkspace = useMemo(() => {
+    return workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null;
+  }, [workspaces, activeWorkspaceId]);
 
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
-  const selectedNodeSuggestions = useMemo(() => {
-    if (!selectedNode || !unlinkedNodeIds.has(selectedNode.id)) {
-      return [];
-    }
-    return suggestLinksForUnlinked(selectedNode, workspaceScopedNodes, 5);
-  }, [selectedNode, unlinkedNodeIds, workspaceScopedNodes]);
+  const activeWorkspaceLogs = useMemo(() => {
+    return workspaceLogs[activeWorkspaceId] ?? [];
+  }, [workspaceLogs, activeWorkspaceId]);
 
   useEffect(() => {
-    setLayoutState(loadWorkspaceLayout(workspaceId));
-  }, [workspaceId]);
+    saveGraphState(graphState);
+  }, [graphState]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      const seeded = await repo.seedIfEmpty(demoNodes);
-      if (!cancelled) {
-        setNodes(seeded);
-      }
-    };
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [repo]);
+    saveWorkspaces(workspaces);
+  }, [workspaces]);
 
   useEffect(() => {
-    if (nodes.length === 0) {
+    saveActiveWorkspaceId(activeWorkspaceId);
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    saveWorkspaceLogs(workspaceLogs);
+  }, [workspaceLogs]);
+
+  useEffect(() => {
+    setWorkspaceNameDraft(activeWorkspace?.name ?? "");
+  }, [activeWorkspace?.id, activeWorkspace?.name]);
+
+  useEffect(() => {
+    if (workspaces.length === 0) {
+      const firstWorkspace = createWorkspace("Workspace 1", 0);
+      setWorkspaces([firstWorkspace]);
+      setActiveWorkspaceId(firstWorkspace.id);
+      setStatusMessage("First workspace created");
+      appendWorkspaceLog(firstWorkspace.id, "First workspace created");
       return;
     }
-    const uniqueWorkspaces = Array.from(new Set(nodes.map((node) => node.workspaceId)));
-    const stop = startBackgroundSync(repo, uniqueWorkspaces);
-    return stop;
-  }, [nodes, repo]);
 
-  const handleLayoutChange = (next: WorkspaceLayoutState) => {
-    setLayoutState(next);
-    saveWorkspaceLayout(workspaceId, next);
-  };
-
-  const handleSelectNode = (id: string) => {
-    // First click: show tooltip
-    if (selectedNodeId !== id) {
-      setSelectedNodeId(id);
-      setSelectionState("tooltip");
-    } else if (selectionState === "tooltip") {
-      // Second click on same node: show detail panel
-      setSelectionState("detail");
-    } else {
-      // Already showing detail, clicking another node shows its tooltip
-      setSelectedNodeId(id);
-      setSelectionState("tooltip");
+    if (!workspaces.some((workspace) => workspace.id === activeWorkspaceId)) {
+      setActiveWorkspaceId(workspaces[0].id);
     }
-  };
+  }, [workspaces, activeWorkspaceId]);
 
-  const refreshNodes = async () => {
-    const next = await repo.listAll();
-    setNodes(next);
-  };
-
-  const pushToast = (message: string, tone: ToastTone = "info") => {
-    const id = crypto.randomUUID();
-    setToasts((prev) => [...prev, { id, message, tone }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((toast) => toast.id !== id));
-    }, 3200);
-  };
-
-  const pushHistory = (item: Omit<CaptureHistoryItem, "id" | "timestamp">) => {
-    const nextItem: CaptureHistoryItem = {
+  const appendWorkspaceLog = (workspaceId: string, message: string) => {
+    const entry: WorkspaceLogEntry = {
       id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      ...item
+      message,
+      timestamp: new Date().toISOString()
     };
-    setCaptureHistory((prev) => [nextItem, ...prev].slice(0, 8));
-  };
 
-  const resolveWorkspaceId = () => {
-    if (workspaceId !== "all") {
-      return workspaceId;
-    }
-    return nodes[0]?.workspaceId ?? "ws-default";
-  };
-
-  const createLinkNode = async (url: string) => {
-    const node = createNode({
-      workspaceId: resolveWorkspaceId(),
-      type: "link",
-      title: url,
-      content: "",
-      metadata: { url }
+    setWorkspaceLogs((previous) => {
+      const existing = previous[workspaceId] ?? [];
+      return {
+        ...previous,
+        [workspaceId]: [...existing, entry].slice(-200)
+      };
     });
-    await repo.save(node);
-    await refreshNodes();
-    setCaptureStatus(`Captured link: ${url}`);
-    pushToast("Link captured", "success");
-    pushHistory({ type: "link", title: url });
-    return node;
   };
 
-  const createNoteNode = async (text: string, title?: string) => {
-    const resolvedTitle = title ?? deriveTitleFromText(text);
-    const node = createNode({
-      workspaceId: resolveWorkspaceId(),
-      type: "note",
-      title: resolvedTitle,
-      content: text
-    });
-    await repo.save(node);
-    await refreshNodes();
-    setCaptureStatus("Captured note");
-    pushToast("Note captured", "success");
-    pushHistory({ type: title ? "file" : "note", title: resolvedTitle, detail: title ? "Imported file" : undefined });
-    return node;
-  };
-
-  const handleCaptureSubmit = async () => {
-    const value = captureValue.trim();
-    if (!value) {
-      setCaptureStatus("Capture is empty");
-      pushToast("Capture is empty", "warning");
-      return;
+  const reportAction = (message: string, workspaceId?: string) => {
+    setStatusMessage(message);
+    const targetWorkspaceId = workspaceId ?? activeWorkspaceId;
+    if (targetWorkspaceId) {
+      appendWorkspaceLog(targetWorkspaceId, message);
     }
-
-    // Try to parse as hybrid input (structured command)
-    const parsed = parseHybridInput(value, {
-      workspaceId: resolveWorkspaceId(),
-      defaultNaturalType: "note"
-    });
-
-    const createdNodes: NodeEntity[] = [];
-    let primary: NodeEntity;
-
-    // If it's a structured command (hierarchy), process it
-    if (parsed.mode === "structured" && parsed.structured.ok && parsed.structured.pathSegments.length > 1) {
-      const hierarchyResult = await captureHierarchicalPath(
-        parsed.structured.pathSegments,
-        parsed.primary,
-        parsed.secondary
-      );
-      primary = hierarchyResult.primary;
-      createdNodes.push(...hierarchyResult.created);
-
-      await refreshNodes();
-
-      pushToast(
-        `Command captured: ${primary.type}`,
-        "success"
-      );
-    } else if (isProbablyUrl(value)) {
-      // It's a URL
-      primary = await createLinkNode(value);
-      createdNodes.push(primary);
-      pushToast("Link captured", "info");
-    } else {
-      // It's a plain note
-      primary = await createNoteNode(value);
-      createdNodes.push(primary);
-      pushToast("Note captured", "info");
-    }
-
-    pushHistory({
-      type: (primary.type === "link" ? "link" : primary.type === "note" ? "note" : "file") as "link" | "note" | "file",
-      title: primary.title,
-      detail: createdNodes.length > 1 ? `+${createdNodes.length - 1} linked` : undefined
-    });
-
-    setCaptureValue("");
-    setCaptureOpen(false);
-  };
-
-  const handleImportFiles = async (files: FileList) => {
-    const file = files[0];
-    if (!file) {
-      return;
-    }
-    const text = await file.text();
-    await createNoteNode(text, file.name.replace(/\.txt$/i, ""));
-    setCaptureOpen(false);
-  };
-
-  const handleConnectNodes = async (
-    sourceId: string,
-    targetId: string,
-    mode: "relation" | "hierarchy"
-  ) => {
-    if (sourceId === targetId) {
-      return;
-    }
-
-    const sourceNode = nodes.find((node) => node.id === sourceId);
-    const targetNode = nodes.find((node) => node.id === targetId);
-    if (!sourceNode || !targetNode) {
-      return;
-    }
-
-    const workspaceId = resolveWorkspaceId();
-
-    if (mode === "hierarchy") {
-      await repo.update(workspaceId, sourceId, { parentId: targetId });
-      pushToast("Hierarchy connected", "success");
-    } else {
-      const sourceRelations = new Set(getNodeRelationIds(sourceNode));
-      const targetRelations = new Set(getNodeRelationIds(targetNode));
-      sourceRelations.add(targetId);
-      targetRelations.add(sourceId);
-
-      await repo.update(workspaceId, sourceId, { relationIds: Array.from(sourceRelations) });
-      await repo.update(workspaceId, targetId, { relationIds: Array.from(targetRelations) });
-      pushToast("Relation connected", "success");
-    }
-
-    await refreshNodes();
-  };
-
-  const captureHierarchicalPath = async (
-    pathSegments: string[],
-    primaryInput: CreateNodeInput,
-    parentInputs: CreateNodeInput[]
-  ) => {
-    const workspace = resolveWorkspaceId();
-    const workspaceNodes = await repo.listByWorkspace(workspace);
-    const created: NodeEntity[] = [];
-
-    let currentParentId: string | null = null;
-    let primary: NodeEntity | null = null;
-
-    for (let index = 0; index < pathSegments.length; index += 1) {
-      const title = pathSegments[index]?.trim();
-      if (!title) {
-        continue;
-      }
-
-      const isLeaf = index === pathSegments.length - 1;
-      const existing = workspaceNodes.find(
-        (node) => node.parentId === currentParentId && node.title.trim().toLowerCase() === title.toLowerCase()
-      );
-
-      if (existing) {
-        if (isLeaf) {
-          primary = existing;
-        }
-        currentParentId = existing.id;
-        continue;
-      }
-
-      const sourceInput = isLeaf
-        ? primaryInput
-        : parentInputs[index] ?? {
-            workspaceId: workspace,
-            type: "project",
-            title,
-            content: "",
-            metadata: { autoGeneratedParent: true }
-          };
-
-      const node = createNode({
-        ...sourceInput,
-        workspaceId: workspace,
-        title,
-        parentId: currentParentId
-      });
-
-      await repo.save(node);
-      workspaceNodes.push(node);
-      created.push(node);
-
-      if (isLeaf) {
-        primary = node;
-      }
-
-      currentParentId = node.id;
-    }
-
-    if (!primary) {
-      primary = createNode({
-        ...primaryInput,
-        workspaceId: workspace,
-        title: primaryInput.title,
-        parentId: currentParentId
-      });
-      await repo.save(primary);
-      created.push(primary);
-    }
-
-    return { primary, created };
   };
 
   useEffect(() => {
-    const handleKeydown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setCaptureOpen(true);
-      }
-    };
+    const hasRunningTimer = workspaces.some((workspace) =>
+      workspace.widgets.some((widget) => widget.type === "timer" && widget.state.isRunning)
+    );
 
-    const handlePaste = (event: ClipboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+    if (!hasRunningTimer) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setWorkspaces((previous) => tickTimerWidgets(previous));
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [workspaces]);
+
+  const handleCreateNode = () => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    createAtPosition(
+      {
+        kind: newNodeType,
+        title: newNodeTitle || "Untitled",
+        content: "",
+        x: WORLD_WIDTH / 2,
+        y: WORLD_HEIGHT / 2
+      },
+      undefined
+    );
+
+    setNewNodeTitle("");
+  };
+
+  const handleDeleteNode = (nodeId: string) => {
+    setGraphState((previous) => deleteNode(previous, nodeId));
+    setWorkspaces((previous) => removeNodeFromWorkspaces(previous, nodeId));
+
+    if (selectedNodeId === nodeId) {
+      setSelectedNodeId(null);
+    }
+    if (pendingConnectionSourceId === nodeId) {
+      setPendingConnectionSourceId(null);
+    }
+
+    reportAction("Node deleted and connections removed");
+  };
+
+  const handleNodeFocus = (nodeId: string) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => bringWorkspaceNodeToFront(previous, activeWorkspace.id, nodeId));
+  };
+
+  const handleNodeSelect = (nodeId: string) => {
+    handleNodeFocus(nodeId);
+    setSelectedNodeId(nodeId);
+
+    if (!pendingConnectionSourceId) {
+      return;
+    }
+
+    if (pendingConnectionSourceId === nodeId) {
+      setPendingConnectionSourceId(null);
+      reportAction("Connection cancelled");
+      return;
+    }
+
+    const result = connectNodes(graphState, pendingConnectionSourceId, nodeId);
+    if (result.connected) {
+      setGraphState(result.state);
+      reportAction("Connection created");
+    } else {
+      reportAction("Connection already exists or is invalid");
+    }
+
+    setPendingConnectionSourceId(null);
+  };
+
+  const handleStartConnection = (nodeId: string) => {
+    handleNodeFocus(nodeId);
+    setPendingConnectionSourceId(nodeId);
+    setSelectedNodeId(nodeId);
+    reportAction("Select another node to connect");
+  };
+
+  const handleNodeMove = (nodeId: string, x: number, y: number) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => updateWorkspaceNodePosition(previous, activeWorkspace.id, nodeId, x, y));
+  };
+
+  const handleNodeEdit = (nodeId: string, patch: { type?: NodeType; title?: string; content?: string; done?: boolean; checklistItems?: Array<{ id: string; text: string; checked: boolean }> }) => {
+    setGraphState((previous) =>
+      updateNode(previous, nodeId, {
+        type: patch.type,
+        data: {
+          title: patch.title,
+          content: patch.content,
+          done: patch.done,
+          checklistItems: patch.checklistItems
+        }
+      })
+    );
+  };
+
+  const handleToggleNodeMinimized = (nodeId: string, isMinimized: boolean) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => setWorkspaceNodeMinimized(previous, activeWorkspace.id, nodeId, isMinimized));
+  };
+
+  const handleCreateWorkspace = () => {
+    const suggestedName = `Workspace ${workspaces.length + 1}`;
+    const providedName = window.prompt("Workspace name", suggestedName);
+    if (providedName === null) {
+      return;
+    }
+
+    const next = createWorkspace(providedName.trim() || suggestedName, workspaces.length);
+    setWorkspaces((previous) => [...previous, next]);
+    setActiveWorkspaceId(next.id);
+    setSelectedNodeId(null);
+    setPendingConnectionSourceId(null);
+    reportAction(`Workspace created: ${next.name}`, next.id);
+  };
+
+  const handleSaveWorkspaceName = () => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    const nextName = workspaceNameDraft.trim();
+    if (!nextName) {
+      setStatusMessage("Workspace name cannot be empty");
+      return;
+    }
+
+    if (nextName === activeWorkspace.name) {
+      setIsWorkspaceConfigOpen(false);
+      return;
+    }
+
+    setWorkspaces((previous) =>
+      previous.map((workspace) =>
+        workspace.id === activeWorkspace.id ? { ...workspace, name: nextName } : workspace
+      )
+    );
+    reportAction(`Workspace renamed to: ${nextName}`, activeWorkspace.id);
+    setIsWorkspaceConfigOpen(false);
+  };
+
+  const handleDeleteWorkspace = () => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    if (workspaces.length <= 1) {
+      setStatusMessage("At least one workspace is required");
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete workspace \"${activeWorkspace.name}\"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const remaining = workspaces
+      .filter((workspace) => workspace.id !== activeWorkspace.id)
+      .map((workspace, index) => ({ ...workspace, orderIndex: index }));
+
+    setWorkspaces(remaining);
+    setActiveWorkspaceId(remaining[0]?.id ?? "");
+    setSelectedNodeId(null);
+    setPendingConnectionSourceId(null);
+    setWorkspaceLogs((previous) => {
+      const next = { ...previous };
+      delete next[activeWorkspace.id];
+      return next;
+    });
+    setIsWorkspaceConfigOpen(false);
+    setIsWorkspaceLogOpen(false);
+    setStatusMessage(`Workspace deleted: ${activeWorkspace.name}`);
+  };
+
+  const handleAddTimerWidget = () => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    const nextZIndex = getNextZIndex(activeWorkspace);
+    const widget = createTimerWidget(WORLD_WIDTH / 2 + 260, WORLD_HEIGHT / 2 - 90, nextZIndex);
+
+    setWorkspaces((previous) => addWidget(previous, activeWorkspace.id, widget));
+    setLastCreatedWidgetId(widget.id);
+    setLastCreatedNodeId(null);
+    reportAction("Timer widget created");
+  };
+
+  const handleWidgetFocus = (widgetId: string) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => bringWidgetToFront(previous, activeWorkspace.id, widgetId));
+  };
+
+  const handleWidgetMove = (widgetId: string, x: number, y: number) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => updateWidgetPosition(previous, activeWorkspace.id, widgetId, x, y));
+  };
+
+  const handleWidgetState = (widgetId: string, patch: Partial<Widget["state"]>) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => updateWidgetState(previous, activeWorkspace.id, widgetId, patch));
+  };
+
+  const handleWidgetDelete = (widgetId: string) => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    setWorkspaces((previous) => removeWidget(previous, activeWorkspace.id, widgetId));
+    reportAction("Widget removed");
+  };
+
+  const handleCanvasCreate = (payload: CanvasCreatePayload) => {
+    createAtPosition(payload, undefined);
+  };
+
+  const handleCommandPreview = (input: string): string => {
+    const plan = parseCommandInput(input);
+    if (!plan.ok) {
+      return plan.error ?? "Invalid command";
+    }
+    return plan.preview ?? "Ready";
+  };
+
+  const handleCommandCreate = (input: string, centerX: number, centerY: number): { ok: boolean; message: string } => {
+    const plan = parseCommandInput(input);
+    if (!plan.ok || !plan.kind) {
+      return { ok: false, message: plan.error ?? "Invalid command" };
+    }
+
+    createAtPosition(
+      {
+        kind: plan.kind,
+        x: centerX,
+        y: centerY,
+        title: plan.title,
+        content: plan.content,
+        checklistItems: plan.checklistItems
+      },
+      plan.workspaceNumber
+    );
+
+    return { ok: true, message: plan.preview ?? "Created" };
+  };
+
+  const createAtPosition = (payload: CanvasCreatePayload, workspaceNumber?: number) => {
+    const expandedWorkspaces = ensureWorkspaceCount(workspaces, workspaceNumber);
+    const workspaceIdToUse = resolveWorkspaceId(expandedWorkspaces, activeWorkspaceId, workspaceNumber);
+    if (!workspaceIdToUse) {
+      return;
+    }
+
+    if (workspaceNumber && workspaceNumber > 0) {
+      setActiveWorkspaceId(workspaceIdToUse);
+    }
+
+    if (payload.kind === "timer") {
+      const targetWorkspace = expandedWorkspaces.find((workspace) => workspace.id === workspaceIdToUse);
+      if (!targetWorkspace) {
         return;
       }
-      const text = event.clipboardData?.getData("text") ?? "";
-      if (text && isProbablyUrl(text)) {
-        createLinkNode(text).catch(() => undefined);
-      }
-    };
 
-    const unsubscribe = subscribeCaptureEvents((payload) => {
-      if (payload.type === "url" && payload.value) {
-        createLinkNode(payload.value).catch(() => undefined);
-      }
-      if (payload.type === "text" && payload.value) {
-        createNoteNode(payload.value).catch(() => undefined);
-      }
-      if (payload.type === "file" && payload.value) {
-        createNoteNode(payload.value, payload.filename ?? "Imported file").catch(() => undefined);
+      const nextZIndex = getNextZIndex(targetWorkspace);
+      const widget = createTimerWidget(payload.x, payload.y, nextZIndex);
+
+      setWorkspaces(addWidget(expandedWorkspaces, workspaceIdToUse, widget));
+      setLastCreatedWidgetId(widget.id);
+      setLastCreatedNodeId(null);
+      reportAction("Timer widget created", workspaceIdToUse);
+      return;
+    }
+
+    const created = createNode(graphState, {
+      type: payload.kind,
+      data: {
+        title: payload.title?.trim() || "Untitled",
+        content: payload.content ?? "",
+        done: false,
+        checklistItems: (payload.checklistItems ?? [])
+          .map((text) => text.trim())
+          .filter(Boolean)
+          .map((text) => ({ id: crypto.randomUUID(), text, checked: false }))
       }
     });
 
-    window.addEventListener("keydown", handleKeydown);
-    window.addEventListener("paste", handlePaste);
-    return () => {
-      window.removeEventListener("keydown", handleKeydown);
-      window.removeEventListener("paste", handlePaste);
-      unsubscribe();
-    };
-  }, [nodes, workspaceId]);
+    setGraphState(created.state);
+
+    const targetWorkspace = expandedWorkspaces.find((workspace) => workspace.id === workspaceIdToUse);
+    if (!targetWorkspace) {
+      return;
+    }
+
+    const nextZIndex = getNextZIndex(targetWorkspace);
+    const workspaceNode = createWorkspaceNode(created.node.id, payload.x, payload.y, nextZIndex);
+
+    setWorkspaces(
+      expandedWorkspaces.map((workspace) =>
+        workspace.id === workspaceIdToUse ? { ...workspace, nodes: [...workspace.nodes, workspaceNode] } : workspace
+      )
+    );
+
+    setLastCreatedNodeId(created.node.id);
+    setLastCreatedWidgetId(null);
+    reportAction(`Node created (${created.node.type})`, workspaceIdToUse);
+  };
+
+  if (!activeWorkspace) {
+    return <main className="app-shell">Initializing workspace...</main>;
+  }
 
   return (
-    <div className="app-shell">
-      <header className="top-bar">
-        <div className="brand">
-          <span className="brand-title">Rehilo Graph</span>
-          <span className="brand-subtitle">Spatial knowledge map</span>
+    <main className="app-shell">
+      <header className="control-bar">
+        <div className="control-group workspace-right-controls">
+          <select value={newNodeType} onChange={(event) => setNewNodeType(event.target.value as NodeType)}>
+            <option value="note">note</option>
+            <option value="todo">todo</option>
+            <option value="journal">journal</option>
+          </select>
+          <input
+            value={newNodeTitle}
+            onChange={(event) => setNewNodeTitle(event.target.value)}
+            placeholder="Node title"
+          />
+          <button type="button" onClick={handleCreateNode}>
+            Add Node
+          </button>
+          <button type="button" onClick={handleAddTimerWidget}>
+            Add Widget
+          </button>
         </div>
-        <button type="button" className="capture-button" onClick={() => setCaptureOpen(true)}>
-          Quick capture
-        </button>
-        <button
-          type="button"
-          className="capture-button"
-          onClick={() => {
-            setShowUnlinkedOnly((prev) => !prev);
-          }}
-        >
-          Unlinked ({unlinkedNodes.length})
-        </button>
-        <FilterBar
-          workspaces={workspaces}
-          types={types}
-          tags={tags}
-          workspaceId={workspaceId}
-          typeFilter={typeFilter}
-          tagQuery={tagQuery}
-          dateFrom={dateFrom}
-          dateTo={dateTo}
-          onWorkspaceChange={setWorkspaceId}
-          onTypeChange={setTypeFilter}
-          onTagQueryChange={setTagQuery}
-          onDateFromChange={setDateFrom}
-          onDateToChange={setDateTo}
-        />
+
+        <div className="control-group">
+          <button type="button" onClick={handleCreateWorkspace}>
+            New Workspace
+          </button>
+          <label htmlFor="workspace-select">Workspace</label>
+          <select
+            id="workspace-select"
+            value={activeWorkspace.id}
+            onChange={(event) => {
+              const nextWorkspaceId = event.target.value;
+              const targetWorkspace = workspaces.find((workspace) => workspace.id === nextWorkspaceId);
+              setActiveWorkspaceId(nextWorkspaceId);
+              setSelectedNodeId(null);
+              setPendingConnectionSourceId(null);
+              if (targetWorkspace) {
+                reportAction(`Workspace selected: ${targetWorkspace.name}`, targetWorkspace.id);
+              }
+            }}
+          >
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => {
+              setIsWorkspaceConfigOpen((previous) => !previous);
+              setIsWorkspaceLogOpen(false);
+            }}
+          >
+            Settings
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIsWorkspaceLogOpen((previous) => !previous);
+              setIsWorkspaceConfigOpen(false);
+            }}
+          >
+            Log
+          </button>
+          <span className="status-text bubble-status">{statusMessage}</span>
+        </div>
+
+        <div className="workspace-right-panels">
+          {isWorkspaceConfigOpen && (
+            <section className="workspace-panel" role="dialog" aria-label="Workspace settings">
+              <strong>Workspace settings</strong>
+              <label htmlFor="workspace-name-input">Name</label>
+              <input
+                id="workspace-name-input"
+                value={workspaceNameDraft}
+                onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+                placeholder="Workspace name"
+              />
+              <div className="workspace-panel-actions">
+                <button type="button" onClick={handleSaveWorkspaceName}>
+                  Save
+                </button>
+                <button type="button" onClick={handleDeleteWorkspace}>
+                  Delete
+                </button>
+              </div>
+            </section>
+          )}
+
+          {isWorkspaceLogOpen && (
+            <section className="workspace-panel" role="dialog" aria-label="Workspace log">
+              <strong>Workspace log</strong>
+              {activeWorkspaceLogs.length === 0 ? (
+                <p className="workspace-log-empty">No actions yet</p>
+              ) : (
+                <ul className="workspace-log-list">
+                  {[...activeWorkspaceLogs].reverse().map((entry) => (
+                    <li key={entry.id}>
+                      <span>{entry.message}</span>
+                      <time>{new Date(entry.timestamp).toLocaleString()}</time>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+        </div>
       </header>
 
-      <main className="main-grid-new">
-        {/* Tab Headers */}
-        <div className="tab-headers">
-          <button
-            className={`tab-button ${viewMode === "dashboard" ? "active" : ""}`}
-            onClick={() => setViewMode("dashboard")}
-          >
-            Dashboard
-          </button>
-          <button
-            className={`tab-button ${viewMode === "graph" ? "active" : ""}`}
-            onClick={() => setViewMode("graph")}
-          >
-            Graph Map
-          </button>
-          {!dashboardCollapsed && (
-            <button
-              className="tab-collapse"
-              onClick={() => setDashboardCollapsed(true)}
-              title="Collapse dashboard to expand graph"
-            >
-              ◀
-            </button>
-          )}
-        </div>
-
-        {/* Main Content Area */}
-        <div className="main-content">
-          {/* Left Panel: Dashboard (collapsible) - Always present unless collapsed */}
-          {!dashboardCollapsed && (
-            <div className="dashboard-panel">
-              <DashboardView
-                nodes={visibleNodes}
-                workspaceId={workspaceId}
-                layoutState={layoutState}
-                onLayoutChange={handleLayoutChange}
-                onSelectNode={handleSelectNode}
-              />
-            </div>
-          )}
-
-          {/* Center: Graph - Always present */}
-          <section className={`graph-panel ${dashboardCollapsed ? "expanded" : ""}`}>
-            <ErrorBoundary
-              fallback={
-                <div className="empty-state">
-                  <h3>Graph failed to load</h3>
-                  <p>Check the browser console for details.</p>
-                </div>
-              }
-            >
-              <GraphScene2D
-                nodes={visibleNodes}
-                edges={edges}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={handleSelectNode}
-                onConnectNodes={handleConnectNodes}
-                selectedNodeTooltip={selectionState === "tooltip" ? selectedNode?.title : undefined}
-              />
-            </ErrorBoundary>
-            {visibleNodes.length === 0 && (
-              <div className="empty-state">
-                <h3>No nodes match the current filters</h3>
-                <p>{showUnlinkedOnly ? "No unlinked nodes in this scope." : "Try relaxing the filters."}</p>
-              </div>
-            )}
-          </section>
-
-          {/* Right Panel: Node Details (appears on second click) */}
-          {selectionState === "detail" && selectedNode && (
-            <aside className="info-panel">
-              <button
-                className="close-panel"
-                onClick={() => setSelectionState("tooltip")}
-                title="Close details"
-              >
-                ✕
-              </button>
-              <div className="panel-card">
-                <h2>{selectedNode.title}</h2>
-                <div className="panel-content">
-                  <p className="meta">Type: <strong>{selectedNode.type}</strong></p>
-                  <p className="meta">Workspace: <strong>{selectedNode.workspaceId}</strong></p>
-                  <div className="tag-list">
-                    {selectedNode.tags.length > 0 ? (
-                      selectedNode.tags.map((tag) => (
-                        <span className="tag" key={tag}>
-                          #{tag}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="tag muted">No tags</span>
-                    )}
-                  </div>
-                  <p className="meta">Created: <strong>{selectedNode.createdAt.slice(0, 10)}</strong></p>
-                </div>
-              </div>
-
-              {selectedNode && unlinkedNodeIds.has(selectedNode.id) && (
-                <div className="panel-card">
-                  <h3>Unlinked suggestions</h3>
-                  {selectedNodeSuggestions.length === 0 ? (
-                    <p className="meta muted">No suggestions by title/tag similarity.</p>
-                  ) : (
-                    <div className="panel-content">
-                      {selectedNodeSuggestions.map((suggestion) => (
-                        <p key={suggestion.target.id} className="meta">
-                          {suggestion.target.title}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="panel-card legend">
-                <h3>Legend</h3>
-                <div className="legend-row">
-                  <span className="dot selected"></span>
-                  <span>Selected node</span>
-                </div>
-                <div className="legend-row">
-                  <span className="dot direct"></span>
-                  <span>Direct relations</span>
-                </div>
-              </div>
-              <CaptureHistoryPanel items={captureHistory} />
-            </aside>
-          )}
-        </div>
-      </main>
-
-      <CaptureDialog
-        open={captureOpen}
-        value={captureValue}
-        status={captureStatus}
-        onChange={setCaptureValue}
-        onClose={() => setCaptureOpen(false)}
-        onSubmit={handleCaptureSubmit}
-        onImport={handleImportFiles}
+      <WorkspaceCanvas
+        workspace={activeWorkspace}
+        nodes={nodes}
+        connections={connections}
+        selectedNodeId={selectedNodeId}
+        pendingConnectionSourceId={pendingConnectionSourceId}
+        lastCreatedNodeId={lastCreatedNodeId}
+        lastCreatedWidgetId={lastCreatedWidgetId}
+        onNodeFocus={handleNodeFocus}
+        onNodeSelect={handleNodeSelect}
+        onNodeMove={handleNodeMove}
+        onNodeEdit={handleNodeEdit}
+        onNodeDelete={handleDeleteNode}
+        onNodeToggleMinimized={handleToggleNodeMinimized}
+        onStartConnection={handleStartConnection}
+        onWidgetFocus={handleWidgetFocus}
+        onWidgetMove={handleWidgetMove}
+        onWidgetStateChange={handleWidgetState}
+        onWidgetDelete={handleWidgetDelete}
+        onCanvasCreate={handleCanvasCreate}
+        onCommandPreview={handleCommandPreview}
+        onCommandCreate={handleCommandCreate}
       />
-      <ToastStack items={toasts} />
-    </div>
+    </main>
   );
+}
+
+function ensureWorkspaceCount(workspaces: Workspace[], workspaceNumber?: number): Workspace[] {
+  if (!workspaceNumber || workspaceNumber <= 0) {
+    return workspaces;
+  }
+
+  let next = [...workspaces];
+  while (next.length < workspaceNumber) {
+    next = [...next, createWorkspace(`Workspace ${next.length + 1}`, next.length)];
+  }
+  return next;
+}
+
+function resolveWorkspaceId(
+  workspaces: Workspace[],
+  activeWorkspaceId: string,
+  workspaceNumber?: number
+): string | null {
+  const expanded = ensureWorkspaceCount(workspaces, workspaceNumber);
+  if (workspaceNumber && workspaceNumber > 0) {
+    return expanded[workspaceNumber - 1]?.id ?? null;
+  }
+
+  if (expanded.some((workspace) => workspace.id === activeWorkspaceId)) {
+    return activeWorkspaceId;
+  }
+
+  return expanded[0]?.id ?? null;
+}
+
+function parseCommandInput(rawInput: string): CommandPlan {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return { ok: false, error: "Write a command first" };
+  }
+
+  const tokens = trimmed
+    .split("/")
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  if (tokens.length === 0) {
+    return { ok: false, error: "Invalid syntax" };
+  }
+
+  let cursor = 0;
+  let workspaceNumber: number | undefined;
+
+  if (/^\d+$/.test(tokens[cursor])) {
+    workspaceNumber = Number(tokens[cursor]);
+    cursor += 1;
+  }
+
+  const typeToken = tokens[cursor]?.toUpperCase();
+  if (!typeToken) {
+    return { ok: false, error: "Missing node type" };
+  }
+  cursor += 1;
+
+  if (typeToken === "N") {
+    const title = tokens[cursor] ?? "Untitled";
+    return {
+      ok: true,
+      kind: "note",
+      workspaceNumber,
+      title,
+      preview: `${workspaceNumber ? `WS ${workspaceNumber} · ` : ""}Create Note: ${title}`
+    };
+  }
+
+  if (typeToken === "J") {
+    const title = tokens[cursor] ?? "Untitled";
+    return {
+      ok: true,
+      kind: "journal",
+      workspaceNumber,
+      title,
+      preview: `${workspaceNumber ? `WS ${workspaceNumber} · ` : ""}Create Journal: ${title}`
+    };
+  }
+
+  if (typeToken === "T") {
+    const title = tokens[cursor] ?? "Untitled";
+    const checklistItems = tokens.slice(cursor + 1).map((token) => token.trim()).filter(Boolean);
+    return {
+      ok: true,
+      kind: "todo",
+      workspaceNumber,
+      title,
+      checklistItems,
+      preview: `${workspaceNumber ? `WS ${workspaceNumber} · ` : ""}Create To-Do: ${title}${
+        checklistItems.length > 0 ? ` (${checklistItems.length} items)` : ""
+      }`
+    };
+  }
+
+  if (typeToken === "W") {
+    return {
+      ok: true,
+      kind: "timer",
+      workspaceNumber,
+      preview: `${workspaceNumber ? `WS ${workspaceNumber} · ` : ""}Create Timer Widget`
+    };
+  }
+
+  return { ok: false, error: "Unknown type. Use N, T, J or W" };
+}
+
+function loadWorkspaceLogs(): WorkspaceLogMap {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  const raw = window.localStorage.getItem(WORKSPACE_LOG_STORAGE_KEY);
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as WorkspaceLogMap;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    const normalized: WorkspaceLogMap = {};
+    for (const [workspaceId, entries] of Object.entries(parsed)) {
+      if (!Array.isArray(entries)) {
+        continue;
+      }
+
+      normalized[workspaceId] = entries
+        .filter((entry) => entry && typeof entry.message === "string" && typeof entry.timestamp === "string")
+        .map((entry) => ({
+          id: typeof entry.id === "string" ? entry.id : crypto.randomUUID(),
+          message: entry.message,
+          timestamp: entry.timestamp
+        }));
+    }
+
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+function saveWorkspaceLogs(logs: WorkspaceLogMap): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(WORKSPACE_LOG_STORAGE_KEY, JSON.stringify(logs));
 }
